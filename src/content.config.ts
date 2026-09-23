@@ -28,7 +28,7 @@ const authors = defineCollection({
 			socialLinks: z.array(
 				z.object({
 					platform: z.string(),
-					url: z.string().url(),
+					url: z.string(),
 				}),
 			),
 		}),
