@@ -1,12 +1,7 @@
 version: 2
 
 updates:
-  - package-ecosystem: "npm"
-    directory: "/"
+  - package-ecosystem: npm
+    directory: /
     schedule:
-      interval: "weekly"
-
-  - package-ecosystem: "npm"
-    directory: "/hello-cdk"
-    schedule:
-      interval: "weekly"
+      interval: weekly
