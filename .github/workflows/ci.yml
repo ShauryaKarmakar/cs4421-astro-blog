@@ -26,10 +26,6 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Install Cdk Dependencies
-        run: npm ci
-        working-directory: hello-cdk
-
       - name: Check Astro
         run: npm run check
 
