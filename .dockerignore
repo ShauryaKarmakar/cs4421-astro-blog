@@ -1,0 +1,11 @@
+﻿node_modules
+dist
+.git
+.github
+.astro
+cdk.out
+hello-cdk/node_modules
+npm-debug.log*
+.env
+.env.*
+!.env.example
