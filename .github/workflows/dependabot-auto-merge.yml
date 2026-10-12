@@ -28,7 +28,12 @@ jobs:
         if: >
           steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
           steps.metadata.outputs.update-type == 'version-update:semver-patch'
-        run: gh pr merge "$PR_URL" --auto --squash
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh pr view "$PR_URL" --json state --jq '.state' | grep -q '^OPEN$'; then
+            gh pr merge "$PR_URL" --auto --squash
+          else
+            echo "Pull request is already closed; skipping auto-merge."
+          fi
