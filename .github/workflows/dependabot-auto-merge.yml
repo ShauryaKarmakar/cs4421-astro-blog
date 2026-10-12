@@ -1,3 +1,4 @@
+
 name: Dependabot Auto-Merge
 
 on:
@@ -21,7 +22,7 @@ jobs:
         id: metadata
         uses: dependabot/fetch-metadata@v2
         with:
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable auto-merge for minor and patch updates
         if: >
