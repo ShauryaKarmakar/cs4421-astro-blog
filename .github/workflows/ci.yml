@@ -41,3 +41,6 @@ jobs:
 
       - name: Build Astro Site
         run: npm run build
+
+      - name: Build Docker Image
+        run: docker build -t my-astro-blog .
