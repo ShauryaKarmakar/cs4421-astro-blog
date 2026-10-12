@@ -1,0 +1,240 @@
+{
+  "/StaticSiteStack": [
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:6:1)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:16:2)",
+        "...node internals, tsx..."
+      ]
+    }
+  ],
+  "/StaticSiteStack/SiteBucket": [
+    {
+      "type": "aws:cdk:analytics:construct",
+      "data": {
+        "removalPolicy": "destroy",
+        "autoDeleteObjects": true
+      }
+    }
+  ],
+  "/StaticSiteStack/Custom::S3AutoDeleteObjectsCustomResourceProvider": [
+    {
+      "type": "aws:cdk:is-custom-resource-handler-customResourceProvider",
+      "data": true
+    }
+  ],
+  "/StaticSiteStack/RewriteFunction": [
+    {
+      "type": "aws:cdk:analytics:construct",
+      "data": {
+        "code": "*"
+      }
+    }
+  ],
+  "/StaticSiteStack/SiteDistribution": [
+    {
+      "type": "aws:cdk:analytics:construct",
+      "data": {
+        "defaultBehavior": {
+          "origin": "*",
+          "functionAssociations": [
+            {
+              "function": "*",
+              "eventType": "viewer-request"
+            }
+          ]
+        },
+        "defaultRootObject": "*"
+      }
+    }
+  ],
+  "/StaticSiteStack/BootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "BootstrapVersion"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/StaticSiteStack/CheckBootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CheckBootstrapVersion"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/StaticSiteStack/SiteBucket/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "SiteBucket397A1860"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Bucket2 in aws-cdk-lib...",
+        "new StaticSiteStack (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\lib\\cdk-stack.ts:10:28)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:6:1)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:16:2)",
+        "...node internals, tsx..."
+      ]
+    },
+    {
+      "type": "aws:cdk:analytics:mixin",
+      "data": {
+        "mixin": "aws-cdk-lib.aws_s3.mixins.BucketAutoDeleteObjects"
+      }
+    }
+  ],
+  "/StaticSiteStack/SiteBucket/Policy": [
+    {
+      "type": "aws:cdk:analytics:construct",
+      "data": {
+        "bucket": "*"
+      }
+    }
+  ],
+  "/StaticSiteStack/SiteBucket/AutoDeleteObjectsCustomResource": [
+    {
+      "type": "aws:cdk:analytics:construct",
+      "data": "*"
+    }
+  ],
+  "/StaticSiteStack/Custom::S3AutoDeleteObjectsCustomResourceProvider/Role": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/StaticSiteStack/Custom::S3AutoDeleteObjectsCustomResourceProvider/Handler": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/StaticSiteStack/RewriteFunction/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "RewriteFunctionE78585E2"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Function2 in aws-cdk-lib...",
+        "new StaticSiteStack (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\lib\\cdk-stack.ts:15:33)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:6:1)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:16:2)",
+        "...node internals, tsx..."
+      ]
+    }
+  ],
+  "/StaticSiteStack/SiteDistribution/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "SiteDistribution3FF9535D"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Distribution2 in aws-cdk-lib...",
+        "new StaticSiteStack (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\lib\\cdk-stack.ts:36:9)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:6:1)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:16:2)",
+        "...node internals, tsx..."
+      ]
+    }
+  ],
+  "/StaticSiteStack/CDKMetadata/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CDKMetadata"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib, node internals...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/StaticSiteStack/SiteBucket/Policy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "SiteBucketPolicy3AC1D0F8"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Bucket2 in aws-cdk-lib...",
+        "new StaticSiteStack (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\lib\\cdk-stack.ts:10:28)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:6:1)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:16:2)"
+      ]
+    },
+    {
+      "type": "aws:cdk:analytics:mixin",
+      "data": {
+        "mixin": "aws-cdk-lib.aws_s3.mixins.BucketPolicyStatements"
+      }
+    }
+  ],
+  "/StaticSiteStack/SiteBucket/AutoDeleteObjectsCustomResource/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "SiteBucketAutoDeleteObjectsCustomResource9585E968"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/StaticSiteStack/SiteDistribution/Origin1/S3OriginAccessControl": [
+    {
+      "type": "aws:cdk:analytics:construct",
+      "data": "*"
+    }
+  ],
+  "/StaticSiteStack/SiteDistribution/Origin1/S3OriginAccessControl/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "SiteDistributionOrigin1S3OriginAccessControl7D960FE6"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Distribution2 in aws-cdk-lib...",
+        "new StaticSiteStack (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\lib\\cdk-stack.ts:36:9)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:6:1)",
+        "<anonymous> (C:\\Semester1\\CS4421\\DEVOPS\\Projects\\Lab\\play\\my-astro-blog\\hello-cdk\\bin\\cdk.ts:16:2)"
+      ]
+    }
+  ]
+}
