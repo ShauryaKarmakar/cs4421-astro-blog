@@ -22,6 +22,10 @@
     "astro": "^7.3.8",
     "bcryptjs": "^3.0.3",
     "pg": "^8.23.1",
+    "@astrojs/mdx": "^8.1.0",
+    "@astrojs/rss": "^4.0.19",
+    "@astrojs/sitemap": "^3.7.4",
+    "astro": "^7.4.0",
     "sharp": "^0.35.5"
   },
   "allowScripts": {
@@ -35,5 +39,11 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.1",
     "vitest": "^5.0.4"
+    "eslint": "^10.13.0",
+    "eslint-plugin-astro": "^3.2.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^5.0.5"
+
   }
 }
