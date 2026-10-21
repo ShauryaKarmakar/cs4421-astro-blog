@@ -1,7 +1,6 @@
 -- migrations/01_init.sql
--- Drop tables if they exist (for development, be careful in production)
--- We are not dropping in production, but for simplicity in this exercise we include.
--- In a real migration tool, we would use CREATE TABLE IF NOT EXISTS and ALTER TABLE.
+-- Initial schema. Existing data is not dropped; apply this through the migration
+-- runner rather than using IF NOT EXISTS as a substitute for schema validation.
 
 -- Enable the uuid-ossp extension if not already enabled (for UUID generation in SQL)
 -- We are generating UUIDs in the app, so we don't strictly need this, but it's handy.

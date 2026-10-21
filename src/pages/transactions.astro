@@ -1,0 +1,1800 @@
+---
+import BaseHead from '@/components/BaseHead.astro';
+import WorkspaceLayout from '@/components/WorkspaceLayout.astro';
+import { APP_CURRENCY } from '@/lib/currencyFormatting';
+---
+
+<!doctype html>
+<html lang="en" class="workspace-page">
+  <head>
+    <BaseHead
+      title="Transactions - UniBudget"
+      description="Manage and review your UniBudget transactions."
+    />
+  </head>
+  <body class="auth-page workspace-page transactions-page">
+    <WorkspaceLayout activePage="transactions">
+      <main class="workspace-content transaction-shell">
+      <header class="page-topbar">
+        <a class="back-link" href="/dashboard">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10H4m5 5-5-5 5-5" /></svg>
+          Back to overview
+        </a>
+      </header>
+
+      <section class="page-intro" aria-labelledby="page-title">
+        <p class="eyebrow">YOUR FINANCIAL ACTIVITY</p>
+        <h1 id="page-title">Transactions</h1>
+        <p class="page-description">Keep track of the details that shape your financial picture.</p>
+      </section>
+
+      <section class="transaction-panel entry-panel" aria-labelledby="form-title">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">RECORD AN ENTRY</p>
+            <h2 id="form-title">Add transaction</h2>
+            <p class="panel-description">Add income or an expense to your history.</p>
+          </div>
+        </div>
+
+        <form id="transaction-form" class="transaction-form">
+          <div class="field-grid">
+            <fieldset class="type-fieldset field-wide" aria-describedby="type-helper">
+              <legend>Type</legend>
+              <div class="type-options">
+                <label class="type-option expense-option">
+                  <input
+                    class="type-choice"
+                    type="radio"
+                    name="type"
+                    value="expense"
+                    checked
+                    required
+                  />
+                  <span class="type-option-content">
+                    <span class="type-option-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M12 5v14M18 13l-6 6-6-6" /></svg>
+                    </span>
+                    <span class="type-option-copy">
+                      <span class="type-option-title">Expense</span>
+                      <span class="type-option-description">Money out</span>
+                    </span>
+                    <span class="type-indicator" aria-hidden="true"></span>
+                  </span>
+                </label>
+                <label class="type-option income-option">
+                  <input
+                    class="type-choice"
+                    type="radio"
+                    name="type"
+                    value="income"
+                    required
+                  />
+                  <span class="type-option-content">
+                    <span class="type-option-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+                    </span>
+                    <span class="type-option-copy">
+                      <span class="type-option-title">Income</span>
+                      <span class="type-option-description">Money in</span>
+                    </span>
+                    <span class="type-indicator" aria-hidden="true"></span>
+                  </span>
+                </label>
+              </div>
+              <p id="type-helper" class="type-helper" aria-live="polite">
+                Record money leaving your account, such as a purchase or bill.
+              </p>
+            </fieldset>
+            <div class="field-group">
+              <label for="transaction-amount">Amount <span>({APP_CURRENCY})</span></label>
+              <div class="amount-input">
+                <span aria-hidden="true">€</span>
+                <input
+                  id="transaction-amount"
+                  name="amount"
+                  type="number"
+                  min="0.01"
+                  max="9999999999.99"
+                  step="0.01"
+                  inputmode="decimal"
+                  placeholder="0.00"
+                  required
+                />
+              </div>
+            </div>
+            <div class="field-group">
+              <label for="transaction-category">Category</label>
+              <input
+                id="transaction-category"
+                name="category"
+                type="text"
+                maxlength="100"
+                placeholder="e.g. Groceries"
+                required
+              />
+            </div>
+            <div class="field-group">
+              <label for="transaction-date">Date</label>
+              <input id="transaction-date" name="transactionDate" type="date" required />
+            </div>
+            <div class="field-group field-wide">
+              <label for="transaction-description">Description <span>(optional)</span></label>
+              <input
+                id="transaction-description"
+                name="description"
+                type="text"
+                maxlength="1000"
+                placeholder="Add a note if you like"
+              />
+            </div>
+            <div class="field-group field-wide">
+              <label for="transaction-store">
+                <span id="store-label">Merchant / store</span> <span>(optional)</span>
+              </label>
+              <input
+                id="transaction-store"
+                name="storeName"
+                type="text"
+                maxlength="200"
+                placeholder="e.g. Tesco"
+              />
+            </div>
+          </div>
+
+          <div class="form-footer">
+            <p id="form-status" class="form-status" role="status" aria-live="polite"></p>
+            <div class="form-actions">
+              <button id="cancel-edit" class="button-secondary" type="button" hidden>Cancel edit</button>
+              <button id="submit-transaction" class="button-primary" type="submit">
+                <span id="submit-label">Save transaction</span>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11m-5-5 5 5-5 5" /></svg>
+              </button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="transaction-panel history-panel" aria-labelledby="history-title">
+        <div class="history-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">YOUR ACTIVITY</p>
+              <h2 id="history-title">Transaction history</h2>
+              <p id="history-count" class="panel-description">Loading your transactions…</p>
+            </div>
+          </div>
+          <div class="filters" aria-label="Filter transactions">
+            <label class="search-control">
+              <span class="sr-only">Search by description or category</span>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.7" cy="8.7" r="5.7" /><path d="m13 13 4 4" /></svg>
+              <input id="transaction-search" type="search" placeholder="Search activity" />
+            </label>
+            <label class="filter-control">
+              <span class="sr-only">Filter by type</span>
+              <select id="type-filter">
+                <option value="all">All types</option>
+                <option value="income">Income</option>
+                <option value="expense">Expense</option>
+              </select>
+            </label>
+            <label class="filter-control date-filter" for="date-from">
+              <span class="filter-caption">Starting date</span>
+              <input id="date-from" type="date" aria-label="Starting date" />
+            </label>
+            <label class="filter-control date-filter" for="date-to">
+              <span class="filter-caption">End date</span>
+              <input id="date-to" type="date" aria-label="End date" />
+            </label>
+          </div>
+        </div>
+
+        <p id="list-status" class="list-status" role="status" aria-live="polite">Loading transactions…</p>
+        <div id="empty-state" class="empty-state" hidden>
+          <span class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="3" /><path d="M8 8h8M8 12h5M8 16h3" /></svg>
+          </span>
+          <h3 id="empty-title">Your history starts here</h3>
+          <p id="empty-description">Transactions you add will appear here. Start with the form above to record your first entry.</p>
+        </div>
+
+        <div id="table-wrap" class="table-wrap" hidden>
+          <table>
+            <caption class="sr-only">Your transaction history</caption>
+            <colgroup>
+              <col class="date-column" />
+              <col class="description-column" />
+              <col class="category-column" />
+              <col class="type-column" />
+              <col class="amount-column" />
+              <col class="actions-column" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">Date</th>
+                <th scope="col">Description</th>
+                <th scope="col">Category</th>
+                <th scope="col">Type</th>
+                <th scope="col" class="amount-heading">Amount</th>
+                <th scope="col" class="actions-heading">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="transaction-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      </main>
+    </WorkspaceLayout>
+
+    <script>
+      import { formatCurrencyAmount } from '../lib/currencyFormatting';
+
+      interface Transaction {
+        id: string;
+        type: 'income' | 'expense';
+        amount: string;
+        category: string;
+        description: string;
+        transactionDate: string;
+        storeName: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }
+
+      interface TransactionListResponse {
+        transactions: Transaction[];
+      }
+
+      interface TransactionResponse {
+        transaction: Transaction;
+      }
+
+      interface ApiErrorResponse {
+        error?: string;
+      }
+
+      const transactionForm = document.querySelector<HTMLFormElement>('#transaction-form');
+      const formTitle = document.querySelector<HTMLHeadingElement>('#form-title');
+      const formStatus = document.querySelector<HTMLParagraphElement>('#form-status');
+      const submitLabel = document.querySelector<HTMLSpanElement>('#submit-label');
+      const submitButton = document.querySelector<HTMLButtonElement>('#submit-transaction');
+      const cancelEditButton = document.querySelector<HTMLButtonElement>('#cancel-edit');
+      const historyCount = document.querySelector<HTMLParagraphElement>('#history-count');
+      const listStatus = document.querySelector<HTMLParagraphElement>('#list-status');
+      const tableWrap = document.querySelector<HTMLDivElement>('#table-wrap');
+      const transactionRows = document.querySelector<HTMLTableSectionElement>('#transaction-rows');
+      const emptyState = document.querySelector<HTMLDivElement>('#empty-state');
+      const emptyTitle = document.querySelector<HTMLHeadingElement>('#empty-title');
+      const emptyDescription = document.querySelector<HTMLParagraphElement>('#empty-description');
+      const searchInput = document.querySelector<HTMLInputElement>('#transaction-search');
+      const typeFilter = document.querySelector<HTMLSelectElement>('#type-filter');
+      const dateFrom = document.querySelector<HTMLInputElement>('#date-from');
+      const dateTo = document.querySelector<HTMLInputElement>('#date-to');
+      const typeHelper = document.querySelector<HTMLParagraphElement>('#type-helper');
+      const storeLabel = document.querySelector<HTMLSpanElement>('#store-label');
+      const fields = {
+        type: document.querySelectorAll<HTMLInputElement>('input[name="type"]'),
+        amount: document.querySelector<HTMLInputElement>('#transaction-amount'),
+        category: document.querySelector<HTMLInputElement>('#transaction-category'),
+        description: document.querySelector<HTMLInputElement>('#transaction-description'),
+        transactionDate: document.querySelector<HTMLInputElement>('#transaction-date'),
+        storeName: document.querySelector<HTMLInputElement>('#transaction-store'),
+      };
+
+      let transactions: Transaction[] = [];
+      let editingId: string | null = null;
+      let loading = false;
+      function selectedType(): 'income' | 'expense' {
+        return Array.from(fields.type).find((option) => option.checked)?.value === 'income'
+          ? 'income'
+          : 'expense';
+      }
+
+      function setSelectedType(type: 'income' | 'expense'): void {
+        for (const option of fields.type) {
+          option.checked = option.value === type;
+        }
+        updateTypeContext();
+      }
+
+      function updateTypeContext(): void {
+        const isIncome = selectedType() === 'income';
+        if (typeHelper) {
+          typeHelper.textContent = isIncome
+            ? 'Record money coming into your account, such as pay or a refund.'
+            : 'Record money leaving your account, such as a purchase or bill.';
+        }
+        if (storeLabel) {
+          storeLabel.textContent = isIncome ? 'Source / payer' : 'Merchant / store';
+        }
+        if (fields.storeName) {
+          fields.storeName.placeholder = isIncome ? 'e.g. Employer or refund' : 'e.g. Tesco';
+        }
+      }
+
+      function getLocalDate(): string {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+
+      function formatDate(date: string): string {
+        const [year, month, day] = date.split('-').map(Number);
+        return new Intl.DateTimeFormat(undefined, {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }).format(new Date(year, month - 1, day));
+      }
+
+      function addCell(row: HTMLTableRowElement, value: string, className?: string): HTMLTableCellElement {
+        const cell = document.createElement('td');
+        if (className) cell.className = className;
+        cell.textContent = value;
+        row.append(cell);
+        return cell;
+      }
+
+      function visibleTransactions(): Transaction[] {
+        const query = searchInput?.value.trim().toLocaleLowerCase() ?? '';
+        const type = typeFilter?.value ?? 'all';
+        const from = dateFrom?.value ?? '';
+        const to = dateTo?.value ?? '';
+
+        return transactions.filter((transaction) => {
+          const searchText = `${transaction.description} ${transaction.category}`.toLocaleLowerCase();
+          return (
+            (!query || searchText.includes(query)) &&
+            (type === 'all' || transaction.type === type) &&
+            (!from || transaction.transactionDate >= from) &&
+            (!to || transaction.transactionDate <= to)
+          );
+        });
+      }
+
+      function renderTransactions(): void {
+        if (!transactionRows || !emptyState || !tableWrap || !historyCount) return;
+        transactionRows.replaceChildren();
+        const visible = visibleTransactions();
+        historyCount.textContent = `${visible.length} ${visible.length === 1 ? 'transaction' : 'transactions'}`;
+
+        if (visible.length === 0) {
+          tableWrap.hidden = true;
+          emptyState.hidden = false;
+          if (transactions.length === 0) {
+            if (emptyTitle) emptyTitle.textContent = 'Your history starts here';
+            if (emptyDescription) {
+              emptyDescription.textContent = 'Transactions you add will appear here. Start with the form above to record your first entry.';
+            }
+          } else {
+            if (emptyTitle) emptyTitle.textContent = 'No matching transactions';
+            if (emptyDescription) {
+              emptyDescription.textContent = 'Try adjusting your search or filters to find what you’re looking for.';
+            }
+          }
+          return;
+        }
+
+        emptyState.hidden = true;
+        tableWrap.hidden = false;
+
+        for (const transaction of visible) {
+          const row = document.createElement('tr');
+          row.dataset.transactionId = transaction.id;
+          addCell(row, formatDate(transaction.transactionDate), 'date-cell');
+
+          addCell(
+            row,
+            transaction.description || 'No description',
+            `description-cell${transaction.description ? '' : ' no-description'}`,
+          );
+
+          addCell(row, transaction.category, 'category-cell');
+
+          const typeCell = document.createElement('td');
+          typeCell.className = 'type-cell';
+          const typeBadge = document.createElement('span');
+          typeBadge.className = `type-badge ${transaction.type}`;
+          typeBadge.textContent = transaction.type === 'income' ? 'Income' : 'Expense';
+          typeCell.append(typeBadge);
+          row.append(typeCell);
+
+          const amountCell = addCell(
+            row,
+            `${transaction.type === 'income' ? '+' : '−'}${formatCurrencyAmount(transaction.amount)}`,
+            `amount-cell ${transaction.type}`,
+          );
+
+          const actionsCell = document.createElement('td');
+          actionsCell.className = 'actions-cell';
+          const actionsGroup = document.createElement('div');
+          actionsGroup.className = 'actions-group';
+          const editButton = document.createElement('button');
+          editButton.type = 'button';
+          editButton.className = 'row-action edit-action';
+          editButton.dataset.action = 'edit';
+          editButton.setAttribute(
+            'aria-label',
+            `Edit ${transaction.description || transaction.storeName || 'transaction'}`,
+          );
+          editButton.append(createActionIcon('edit'));
+          const editLabel = document.createElement('span');
+          editLabel.textContent = 'Edit';
+          editButton.append(editLabel);
+
+          const deleteButton = document.createElement('button');
+          deleteButton.type = 'button';
+          deleteButton.className = 'row-action delete-action';
+          deleteButton.dataset.action = 'delete';
+          deleteButton.setAttribute(
+            'aria-label',
+            `Delete ${transaction.description || transaction.storeName || 'transaction'}`,
+          );
+          deleteButton.append(createActionIcon('delete'));
+          const deleteLabel = document.createElement('span');
+          deleteLabel.textContent = 'Delete';
+          deleteButton.append(deleteLabel);
+
+          actionsGroup.append(editButton, deleteButton);
+          actionsCell.append(actionsGroup);
+          row.append(actionsCell);
+          transactionRows.append(row);
+          amountCell.setAttribute(
+            'aria-label',
+            `${transaction.type} ${formatCurrencyAmount(transaction.amount)}`,
+          );
+        }
+      }
+
+      function createActionIcon(action: 'edit' | 'delete'): SVGSVGElement {
+        const namespace = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(namespace, 'svg');
+        svg.setAttribute('viewBox', '0 0 20 20');
+        svg.setAttribute('aria-hidden', 'true');
+        svg.setAttribute('focusable', 'false');
+        const path = document.createElementNS(namespace, 'path');
+        path.setAttribute(
+          'd',
+          action === 'edit'
+            ? 'M13.5 4.5 15.5 6.5M4 16l.7-3.3L13.8 3.6a1.4 1.4 0 0 1 2 0l.6.6a1.4 1.4 0 0 1 0 2L7.3 15.3 4 16Z'
+            : 'M3.5 5.5h13m-11.5 0 .8 11h8.4l.8-11M7.5 5.5V3.8h5v1.7m-4 3v5m3-5v5',
+        );
+        svg.append(path);
+        return svg;
+      }
+
+      function showFormMessage(message: string, kind: 'error' | 'success' | ''): void {
+        if (!formStatus) return;
+        formStatus.textContent = message;
+        formStatus.className = `form-status${kind ? ` ${kind}` : ''}`;
+      }
+
+      function showListError(message: string): void {
+        if (!listStatus) return;
+        listStatus.textContent = message;
+        listStatus.className = 'list-status error';
+        listStatus.hidden = false;
+      }
+
+      async function readApiError(response: Response, fallback: string): Promise<string> {
+        try {
+          const body = (await response.json()) as ApiErrorResponse;
+          return typeof body.error === 'string' ? body.error : fallback;
+        } catch {
+          return fallback;
+        }
+      }
+
+      function handleExpiredSession(): void {
+        const message = 'Your session has expired. Redirecting you to sign in…';
+        showFormMessage(message, 'error');
+        showListError(message);
+        window.setTimeout(() => window.location.assign('/login'), 900);
+      }
+
+      async function loadTransactions(): Promise<boolean> {
+        if (loading || !listStatus || !tableWrap || !emptyState) return false;
+        loading = true;
+        listStatus.hidden = false;
+        listStatus.className = 'list-status';
+        listStatus.textContent = 'Loading transactions…';
+        tableWrap.hidden = true;
+        emptyState.hidden = true;
+
+        try {
+          const response = await fetch('/api/transactions', {
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+          });
+
+          if (response.status === 401) {
+            handleExpiredSession();
+            return false;
+          }
+          if (!response.ok) {
+            showListError(await readApiError(response, 'Unable to load transactions. Please try again.'));
+            return false;
+          }
+
+          const body = (await response.json()) as TransactionListResponse;
+          if (!body || !Array.isArray(body.transactions)) {
+            showListError('The server returned an unexpected transaction response.');
+            return false;
+          }
+
+          transactions = body.transactions;
+          listStatus.hidden = true;
+          renderTransactions();
+          return true;
+        } catch {
+          showListError('Unable to reach the server. Check your connection and try again.');
+          return false;
+        } finally {
+          loading = false;
+        }
+      }
+
+      function resetForm(): void {
+        transactionForm?.reset();
+        editingId = null;
+        if (formTitle) formTitle.textContent = 'Add transaction';
+        if (submitLabel) submitLabel.textContent = 'Save transaction';
+        if (cancelEditButton) cancelEditButton.hidden = true;
+        setSelectedType('expense');
+        if (fields.transactionDate) fields.transactionDate.value = getLocalDate();
+        showFormMessage('', '');
+      }
+
+      function startEditing(transaction: Transaction): void {
+        if (
+          fields.type.length === 0 ||
+          !fields.amount ||
+          !fields.category ||
+          !fields.description ||
+          !fields.transactionDate ||
+          !fields.storeName
+        ) {
+          return;
+        }
+
+        editingId = transaction.id;
+        setSelectedType(transaction.type);
+        fields.amount.value = transaction.amount;
+        fields.category.value = transaction.category;
+        fields.description.value = transaction.description;
+        fields.transactionDate.value = transaction.transactionDate;
+        fields.storeName.value = transaction.storeName ?? '';
+        if (formTitle) formTitle.textContent = 'Edit transaction';
+        if (submitLabel) submitLabel.textContent = 'Save changes';
+        if (cancelEditButton) cancelEditButton.hidden = false;
+        showFormMessage('Editing selected transaction.', '');
+        transactionForm?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        fields.amount.focus();
+      }
+
+      function createPayload(): Record<string, string | null> {
+        if (
+          !fields.amount ||
+          !fields.category ||
+          !fields.description ||
+          !fields.transactionDate ||
+          !fields.storeName ||
+          fields.type.length === 0
+        ) {
+          return {};
+        }
+
+        const payload: Record<string, string | null> = {
+          type: selectedType(),
+          amount: fields.amount.value,
+          category: fields.category.value.trim(),
+          description: fields.description.value.trim(),
+          transactionDate: fields.transactionDate.value,
+        };
+        const storeName = fields.storeName.value.trim();
+        if (editingId !== null) payload.storeName = storeName || null;
+        else if (storeName) payload.storeName = storeName;
+        return payload;
+      }
+
+      async function submitTransaction(event: SubmitEvent): Promise<void> {
+        event.preventDefault();
+        if (!transactionForm || !submitButton) return;
+
+        showFormMessage('', '');
+        if (!transactionForm.reportValidity()) return;
+
+        const payload = createPayload();
+        const wasEditing = editingId !== null;
+        const url = wasEditing ? `/api/transactions/${encodeURIComponent(editingId!)}` : '/api/transactions';
+        submitButton.disabled = true;
+        if (submitLabel) submitLabel.textContent = wasEditing ? 'Saving changes…' : 'Saving transaction…';
+
+        try {
+          const response = await fetch(url, {
+            method: wasEditing ? 'PATCH' : 'POST',
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+
+          if (response.status === 401) {
+            handleExpiredSession();
+            return;
+          }
+          if (!response.ok) {
+            showFormMessage(await readApiError(response, 'Unable to save transaction. Please try again.'), 'error');
+            return;
+          }
+
+          const body = (await response.json()) as TransactionResponse;
+          if (!body?.transaction?.id) {
+            showFormMessage('The server returned an unexpected transaction response.', 'error');
+            return;
+          }
+
+          resetForm();
+          showFormMessage(wasEditing ? 'Transaction updated.' : 'Transaction added.', 'success');
+          if (listStatus) listStatus.textContent = 'Refreshing transactions…';
+          await loadTransactions();
+        } catch {
+          showFormMessage('Unable to reach the server. Your transaction was not confirmed.', 'error');
+        } finally {
+          submitButton.disabled = false;
+          if (submitLabel && editingId === null) submitLabel.textContent = 'Save transaction';
+          else if (submitLabel && editingId !== null) submitLabel.textContent = 'Save changes';
+        }
+      }
+
+      async function deleteTransaction(transaction: Transaction): Promise<void> {
+        const confirmed = window.confirm(`Delete “${transaction.description}”? This cannot be undone.`);
+        if (!confirmed) return;
+
+        if (listStatus) {
+          listStatus.hidden = false;
+          listStatus.className = 'list-status';
+          listStatus.textContent = 'Deleting transaction…';
+        }
+
+        try {
+          const response = await fetch(`/api/transactions/${encodeURIComponent(transaction.id)}`, {
+            method: 'DELETE',
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+          });
+
+          if (response.status === 401) {
+            handleExpiredSession();
+            return;
+          }
+          if (!response.ok) {
+            showListError(await readApiError(response, 'Unable to delete transaction. Please try again.'));
+            return;
+          }
+
+          showFormMessage('Transaction deleted.', 'success');
+          await loadTransactions();
+        } catch {
+          showListError('Unable to reach the server. The transaction was not confirmed as deleted.');
+        }
+      }
+
+      if (
+        transactionForm &&
+        formTitle &&
+        formStatus &&
+        submitLabel &&
+        submitButton &&
+        cancelEditButton &&
+        historyCount &&
+        listStatus &&
+        tableWrap &&
+        transactionRows &&
+        emptyState &&
+        emptyTitle &&
+        emptyDescription &&
+        searchInput &&
+        typeFilter &&
+        dateFrom &&
+        dateTo &&
+        fields.type.length > 0 &&
+        fields.amount &&
+        fields.category &&
+        fields.description &&
+        fields.transactionDate &&
+        fields.storeName
+      ) {
+        fields.transactionDate.value = getLocalDate();
+        for (const option of fields.type) {
+          option.addEventListener('change', updateTypeContext);
+        }
+        updateTypeContext();
+        transactionForm.addEventListener('submit', (event) => void submitTransaction(event));
+        cancelEditButton.addEventListener('click', resetForm);
+
+        transactionRows.addEventListener('click', (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLButtonElement)) return;
+          const row = target.closest<HTMLTableRowElement>('tr[data-transaction-id]');
+          const transaction = transactions.find((item) => item.id === row?.dataset.transactionId);
+          if (!transaction) return;
+
+          if (target.dataset.action === 'edit') startEditing(transaction);
+          if (target.dataset.action === 'delete') void deleteTransaction(transaction);
+        });
+
+        for (const filter of [searchInput, typeFilter, dateFrom, dateTo]) {
+          filter.addEventListener('input', renderTransactions);
+          filter.addEventListener('change', renderTransactions);
+        }
+
+        void loadTransactions();
+      }
+    </script>
+  </body>
+</html>
+
+<style>
+  .page-topbar,
+  .page-footer,
+  .form-footer,
+  .history-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+  }
+
+  .page-topbar {
+    margin-bottom: 39px;
+  }
+
+  .back-link,
+  .page-footer a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--color-text-secondary);
+    font-size: 0.78rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition: color 150ms ease;
+  }
+
+  .back-link svg {
+    width: 17px;
+    height: 17px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+  }
+
+  .back-link:hover,
+  .page-footer a:hover {
+    color: var(--color-accent-hover);
+  }
+
+  .back-link:active,
+  .page-footer a:active {
+    color: #b3c9ff;
+  }
+
+  .back-link:focus-visible,
+  .page-footer a:focus-visible,
+  .transaction-form button:focus-visible,
+  .row-action:focus-visible {
+    outline: 3px solid var(--color-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .page-intro {
+    margin-bottom: 27px;
+  }
+
+  .eyebrow,
+  .section-kicker {
+    margin: 0 0 8px;
+    color: var(--color-accent-hover);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+  }
+
+  .page-intro h1 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: clamp(2rem, 5vw, 2.7rem);
+    font-weight: 600;
+    letter-spacing: -0.055em;
+    line-height: 1.1;
+  }
+
+  .page-description {
+    margin: 10px 0 0;
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+  }
+
+  .transaction-panel {
+    min-width: 0;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg);
+    background:
+      linear-gradient(145deg, var(--glass-highlight), transparent 45%),
+      linear-gradient(150deg, var(--glass-surface-strong), var(--glass-surface));
+    box-shadow: var(--glass-shadow);
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    backdrop-filter: blur(var(--glass-blur));
+  }
+
+  .entry-panel {
+    margin-bottom: 20px;
+    padding: 24px;
+  }
+
+  .panel-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+  }
+
+  .section-kicker {
+    margin-bottom: 6px;
+    color: var(--color-accent-hover);
+    font-size: 0.58rem;
+  }
+
+  .transaction-panel h2 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+  }
+
+  .panel-description {
+    margin: 5px 0 0;
+    color: var(--color-text-secondary);
+    font-size: 0.75rem;
+  }
+
+  .empty-icon {
+    display: grid;
+    width: 38px;
+    height: 38px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid rgba(91, 140, 255, 0.22);
+    border-radius: var(--radius-md);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+  }
+
+  .empty-icon svg {
+    width: 19px;
+    height: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+  }
+
+  .transaction-form {
+    margin-top: 22px;
+  }
+
+  .field-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 18px;
+  }
+
+  .field-group {
+    display: grid;
+    min-width: 0;
+    gap: 7px;
+  }
+
+  .field-wide {
+    grid-column: 1 / -1;
+  }
+
+  .type-fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .type-fieldset legend {
+    margin-bottom: 8px;
+    padding: 0;
+    color: #cbd5e1;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .type-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 11px;
+  }
+
+  .type-option {
+    position: relative;
+    display: block;
+    min-width: 0;
+    cursor: pointer;
+  }
+
+  .type-choice {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .type-option-content {
+    display: flex;
+    min-height: 61px;
+    align-items: center;
+    gap: 11px;
+    padding: 10px 13px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.035), transparent 65%),
+      var(--color-surface-input);
+    transition: border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease;
+  }
+
+  .type-option:hover .type-option-content {
+    border-color: var(--color-border-strong);
+  }
+
+  .type-option:has(.type-choice:focus-visible) .type-option-content {
+    outline: 3px solid var(--color-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .expense-option:has(.type-choice:checked) .type-option-content {
+    border-color: rgba(251, 113, 133, 0.62);
+    background: linear-gradient(110deg, rgba(127, 29, 29, 0.23), rgba(31, 24, 34, 0.55));
+    box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.08);
+  }
+
+  .income-option:has(.type-choice:checked) .type-option-content {
+    border-color: rgba(52, 211, 153, 0.55);
+    background: linear-gradient(110deg, rgba(6, 78, 59, 0.25), rgba(16, 31, 38, 0.58));
+    box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.08);
+  }
+
+  .type-option-icon {
+    display: grid;
+    width: 35px;
+    height: 35px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid rgba(148, 163, 184, 0.13);
+    border-radius: 10px;
+    background: rgba(148, 163, 184, 0.06);
+    color: #99a7ba;
+  }
+
+  .type-option-icon svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.8;
+  }
+
+  .expense-option:has(.type-choice:checked) .type-option-icon {
+    border-color: rgba(251, 113, 133, 0.24);
+    background: rgba(251, 113, 133, 0.1);
+    color: #fb8c9a;
+  }
+
+  .income-option:has(.type-choice:checked) .type-option-icon {
+    border-color: rgba(52, 211, 153, 0.22);
+    background: rgba(52, 211, 153, 0.09);
+    color: #5fe0ac;
+  }
+
+  .type-option-copy {
+    display: grid;
+    gap: 2px;
+  }
+
+  .type-option-title {
+    color: var(--color-text-primary);
+    font-size: 0.78rem;
+    font-weight: 650;
+  }
+
+  .type-option-description {
+    color: #8998ac;
+    font-size: 0.66rem;
+  }
+
+  .type-indicator {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    margin-left: auto;
+    border: 1px solid #506078;
+    border-radius: 50%;
+  }
+
+  .expense-option:has(.type-choice:checked) .type-indicator {
+    border: 4px solid #fb8293;
+    background: #18202d;
+  }
+
+  .income-option:has(.type-choice:checked) .type-indicator {
+    border: 4px solid #34d399;
+    background: #14262a;
+  }
+
+  .type-helper {
+    min-height: 1.4em;
+    margin: 8px 0 0;
+    color: #8290a4;
+    font-size: 0.68rem;
+    line-height: 1.45;
+  }
+
+  .field-group label {
+    color: var(--color-text-primary);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .field-group label span {
+    color: var(--color-text-muted);
+    font-weight: 400;
+  }
+
+  .field-group input,
+  .field-group select,
+  .filter-control select,
+  .filter-control input,
+  .search-control input {
+    width: 100%;
+    min-width: 0;
+    height: 43px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    outline: none;
+    background-color: var(--color-surface-input);
+    color: var(--color-text-primary);
+    font: inherit;
+    font-size: 0.79rem;
+    transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+  }
+
+  .field-group input::placeholder,
+  .search-control input::placeholder {
+    color: var(--color-text-muted);
+    opacity: 1;
+  }
+
+  .field-group input:hover,
+  .field-group select:hover,
+  .filter-control select:hover,
+  .filter-control input:hover,
+  .search-control input:hover {
+    border-color: var(--color-border-strong);
+  }
+
+  .field-group input:focus-visible,
+  .field-group select:focus-visible,
+  .filter-control select:focus-visible,
+  .filter-control input:focus-visible,
+  .search-control input:focus-visible {
+    border-color: var(--color-accent);
+    background-color: rgba(18, 27, 42, 0.94);
+    box-shadow: 0 0 0 3px var(--color-focus-ring);
+  }
+
+  .amount-input {
+    position: relative;
+  }
+
+  .amount-input > span {
+    position: absolute;
+    z-index: 1;
+    top: 50%;
+    left: 13px;
+    color: #91a0b4;
+    font-size: 0.82rem;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+
+  .amount-input input {
+    padding-left: 29px;
+  }
+
+  .amount-input input::-webkit-inner-spin-button,
+  .amount-input input::-webkit-outer-spin-button {
+    margin: 0;
+    appearance: none;
+  }
+
+  .amount-input input {
+    appearance: textfield;
+  }
+
+  .form-footer {
+    align-items: flex-end;
+    margin-top: 20px;
+  }
+
+  .form-status {
+    min-height: 1.3em;
+    margin: 0;
+    color: #8e9db1;
+    font-size: 0.74rem;
+    line-height: 1.45;
+  }
+
+  .form-status.error {
+    color: var(--color-danger);
+  }
+
+  .form-status.success {
+    color: var(--color-success);
+  }
+
+  .form-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 9px;
+  }
+
+  .button-primary,
+  .button-secondary {
+    display: inline-flex;
+    min-height: 43px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 0 15px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 700;
+    transition: transform 150ms ease, filter 150ms ease, border-color 150ms ease;
+  }
+
+  .button-primary {
+    border: 1px solid rgba(165, 192, 255, 0.62);
+    background: linear-gradient(135deg, #648be0, #466fc1);
+    color: #fff;
+    box-shadow: 0 7px 20px rgba(58, 94, 162, 0.2), inset 0 1px rgba(255, 255, 255, 0.16);
+  }
+
+  .button-primary:hover:not(:disabled) {
+    transform: translateY(-1px);
+    filter: brightness(1.05);
+  }
+
+  .button-primary:active:not(:disabled) {
+    transform: translateY(0);
+    filter: brightness(0.96);
+  }
+
+  .button-primary:disabled {
+    cursor: wait;
+    opacity: 0.7;
+  }
+
+  .button-primary svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+  }
+
+  .button-secondary {
+    border: 1px solid var(--color-border-strong);
+    background: transparent;
+    color: var(--color-text-secondary);
+  }
+
+  .button-secondary:hover {
+    border-color: var(--color-accent);
+  }
+
+  .button-secondary:active:not(:disabled) {
+    background: var(--color-accent-soft);
+  }
+
+  .history-panel {
+    padding: 22px 24px 13px;
+  }
+
+  .history-heading {
+    align-items: flex-end;
+    margin-bottom: 18px;
+  }
+
+  .filters {
+    display: flex;
+    min-width: 0;
+    align-items: flex-end;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .search-control {
+    position: relative;
+    display: block;
+    width: 185px;
+  }
+
+  .search-control svg {
+    position: absolute;
+    top: 50%;
+    left: 10px;
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: #78879a;
+    stroke-linecap: round;
+    stroke-width: 1.7;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+
+  .search-control input {
+    height: 36px;
+    padding-left: 31px;
+    font-size: 0.69rem;
+  }
+
+  .filter-control {
+    display: block;
+    width: 107px;
+  }
+
+  .filter-control select,
+  .filter-control input {
+    height: 36px;
+    padding: 0 8px;
+    color: #aeb9c9;
+    font-size: 0.66rem;
+  }
+
+  .date-filter {
+    display: grid;
+    width: 140px;
+    gap: 4px;
+  }
+
+  .filter-caption {
+    padding-left: 8px;
+    color: #8b9aaf;
+    font-size: 0.62rem;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .date-filter input {
+    color-scheme: dark;
+  }
+
+  .list-status {
+    margin: 13px 0 17px;
+    color: #8b9aaf;
+    font-size: 0.78rem;
+    text-align: center;
+  }
+
+  .list-status.error {
+    padding: 18px;
+    border: 1px solid rgba(248, 113, 113, 0.24);
+    border-radius: var(--radius-md);
+    background: rgba(127, 29, 29, 0.12);
+    color: var(--color-danger);
+  }
+
+  .empty-state {
+    display: grid;
+    min-height: 250px;
+    align-content: center;
+    justify-items: center;
+    padding: 25px;
+    text-align: center;
+  }
+
+  .empty-icon {
+    width: 45px;
+    height: 45px;
+    margin-bottom: 15px;
+    border-color: rgba(148, 163, 184, 0.14);
+    background: rgba(148, 163, 184, 0.06);
+    color: #9aa8bb;
+  }
+
+  .empty-state h3 {
+    margin: 0;
+    color: #dbe3ed;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .empty-state p {
+    max-width: 380px;
+    margin: 7px 0 0;
+    color: #8795a9;
+    font-size: 0.76rem;
+    line-height: 1.6;
+  }
+
+  .table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+
+  table {
+    width: 100%;
+    min-width: 890px;
+    table-layout: fixed;
+    border-collapse: collapse;
+    text-align: left;
+  }
+
+  .date-column {
+    width: 110px;
+  }
+
+  .description-column {
+    width: 225px;
+  }
+
+  .category-column {
+    width: 155px;
+  }
+
+  .type-column {
+    width: 110px;
+  }
+
+  .amount-column {
+    width: 145px;
+  }
+
+  .actions-column {
+    width: 175px;
+  }
+
+  .table-wrap :global(th) {
+    padding: 11px 10px;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.035em;
+    white-space: nowrap;
+  }
+
+  .table-wrap :global(td) {
+    min-width: 0;
+    padding: 14px 10px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+    color: var(--color-text-secondary);
+    font-size: 0.84rem;
+  }
+
+  .table-wrap :global(tbody tr:last-child td) {
+    border-bottom: 0;
+  }
+
+  .table-wrap :global(tbody tr:hover td) {
+    background: rgba(177, 199, 235, 0.025);
+  }
+
+  .table-wrap :global(.date-cell) {
+    color: #8d9aae;
+    white-space: nowrap;
+  }
+
+  .table-wrap :global(.description-cell),
+  .table-wrap :global(.category-cell) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .table-wrap :global(.description-cell) {
+    color: var(--color-text-primary);
+    font-weight: 600;
+  }
+
+  .table-wrap :global(.description-cell.no-description) {
+    color: #77869a;
+    font-weight: 400;
+    font-style: italic;
+  }
+
+  .table-wrap :global(.category-cell) {
+    color: #aab6c6;
+  }
+
+  .table-wrap :global(.type-cell) {
+    white-space: nowrap;
+  }
+
+  .table-wrap :global(.type-badge) {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 999px;
+    color: #b1bdcd;
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+
+  .table-wrap :global(.type-badge.income) {
+    border-color: rgba(52, 211, 153, 0.17);
+    background: rgba(52, 211, 153, 0.065);
+    color: var(--color-success);
+  }
+
+  .table-wrap :global(.type-badge.expense) {
+    border-color: rgba(248, 113, 113, 0.2);
+    background: rgba(248, 113, 113, 0.07);
+    color: var(--color-danger);
+  }
+
+  .amount-heading,
+  .table-wrap :global(.amount-cell) {
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .table-wrap :global(.amount-cell) {
+    color: #f0f3f8;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .table-wrap :global(.amount-cell.income) {
+    color: var(--color-success);
+  }
+
+  .table-wrap :global(.amount-cell.expense) {
+    color: var(--color-danger);
+  }
+
+  .actions-heading {
+    padding-right: 12px !important;
+    text-align: right;
+  }
+
+  .table-wrap :global(.actions-cell) {
+    min-width: 0;
+    padding-right: 12px;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .table-wrap :global(.actions-group) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+  }
+
+  .table-wrap :global(.row-action) {
+    display: inline-flex;
+    min-width: 68px;
+    min-height: 34px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 9px;
+    border: 1px solid rgba(148, 163, 184, 0.15);
+    border-radius: 8px;
+    background: rgba(148, 163, 184, 0.045);
+    color: #b5c0ce;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 600;
+    transition: transform 120ms ease, border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+  }
+
+  .table-wrap :global(.row-action svg) {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.5;
+  }
+
+  .table-wrap :global(.row-action:hover) {
+    transform: translateY(-1px);
+    border-color: rgba(148, 163, 184, 0.3);
+    background: rgba(148, 163, 184, 0.09);
+    color: #f0f4f8;
+  }
+
+  .table-wrap :global(.row-action:active) {
+    transform: translateY(0);
+  }
+
+  .table-wrap :global(.row-action:focus-visible) {
+    outline: 3px solid var(--color-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .table-wrap :global(.row-action.edit-action) {
+    border-color: rgba(91, 140, 255, 0.22);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+  }
+
+  .table-wrap :global(.row-action.edit-action:hover) {
+    border-color: rgba(91, 140, 255, 0.42);
+    background: rgba(91, 140, 255, 0.2);
+    color: #b3c9ff;
+  }
+
+  .table-wrap :global(.row-action.delete-action) {
+    border-color: rgba(248, 113, 113, 0.18);
+    background: rgba(248, 113, 113, 0.045);
+    color: #fca5a5;
+  }
+
+  .table-wrap :global(.row-action.delete-action:hover) {
+    border-color: rgba(248, 113, 113, 0.38);
+    background: rgba(248, 113, 113, 0.12);
+    color: #fecaca;
+  }
+
+  .page-footer {
+    margin-top: 20px;
+    padding: 15px 2px 0;
+    border-top: 1px solid rgba(148, 163, 184, 0.09);
+    color: #718096;
+    font-size: 0.66rem;
+  }
+
+  .page-footer a {
+    font-size: inherit;
+  }
+
+  @media (max-width: 850px) {
+    .history-heading {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .filters {
+      width: 100%;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+
+    .search-control {
+      flex: 1 1 190px;
+    }
+  }
+
+  @media (max-width: 600px) {
+    .page-topbar {
+      margin-bottom: 31px;
+    }
+
+    .page-topbar .brand {
+      font-size: 1rem;
+    }
+
+    .back-link {
+      gap: 5px;
+      font-size: 0.78rem;
+    }
+
+    .page-intro {
+      margin-bottom: 21px;
+    }
+
+    .entry-panel,
+    .history-panel {
+      padding: 18px 15px;
+    }
+
+    .field-grid {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 13px;
+    }
+
+    .field-wide {
+      grid-column: auto;
+    }
+
+    .type-fieldset.field-wide {
+      grid-column: 1 / -1;
+    }
+
+    .form-footer {
+      align-items: stretch;
+      flex-direction: column;
+      gap: 11px;
+    }
+
+    .form-actions {
+      justify-content: flex-end;
+    }
+
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .search-control,
+    .filter-control,
+    .date-filter {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .search-control {
+      grid-column: 1 / -1;
+    }
+
+    .table-wrap {
+      overflow: visible;
+    }
+
+    table {
+      min-width: 0;
+      table-layout: auto;
+    }
+
+    colgroup {
+      display: none;
+    }
+
+    table,
+    tbody,
+    .table-wrap :global(tr),
+    .table-wrap :global(td) {
+      display: block;
+      width: 100%;
+    }
+
+    thead {
+      display: none;
+    }
+
+    .table-wrap :global(tbody) {
+      display: grid;
+      gap: 10px;
+    }
+
+    .table-wrap :global(tbody tr) {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 7px 12px;
+      padding: 13px;
+      border: 1px solid var(--glass-border);
+      border-radius: 10px;
+      background:
+        linear-gradient(145deg, var(--glass-highlight), transparent 65%),
+        var(--glass-surface);
+    }
+
+    .table-wrap :global(td) {
+      width: auto;
+      padding: 0;
+      border: 0;
+      font-size: 0.7rem;
+    }
+
+    .table-wrap :global(.date-cell) {
+      grid-column: 1;
+      grid-row: 1;
+      color: #8492a6;
+      font-size: 0.72rem;
+    }
+
+    .table-wrap :global(.description-cell) {
+      grid-column: 1;
+      grid-row: 2;
+      min-width: 0;
+    }
+
+    .table-wrap :global(.category-cell) {
+      grid-column: 1;
+      grid-row: 3;
+      color: #8f9db0;
+    }
+
+    .table-wrap :global(.type-cell) {
+      grid-column: 2;
+      grid-row: 2;
+      justify-self: end;
+    }
+
+    .table-wrap :global(.amount-cell) {
+      grid-column: 2;
+      grid-row: 1;
+      justify-self: end;
+      text-align: right;
+    }
+
+    .table-wrap :global(.actions-cell) {
+      grid-column: 1 / -1;
+      grid-row: 4;
+      min-width: 0;
+      text-align: right;
+    }
+
+    .page-footer {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 7px;
+    }
+  }
+
+  @media (max-width: 360px) {
+    .page-topbar {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .history-panel {
+      padding-right: 12px;
+      padding-left: 12px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .back-link,
+    .field-group input,
+    .field-group select,
+    .filter-control select,
+    .filter-control input,
+    .search-control input,
+    .button-primary,
+    .button-secondary {
+      transition: none;
+    }
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .transaction-panel {
+      background: #151d2b;
+    }
+  }
+</style>

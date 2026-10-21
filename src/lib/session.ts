@@ -1,6 +1,6 @@
 // src/lib/session.ts
-import { randomUUID } from 'crypto';
-import bcrypt from 'bcryptjs';
+import { createHash, randomUUID } from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { pool } from './db';
 
 const SESSION_TABLE = 'sessions';
@@ -13,17 +13,20 @@ export function generateSessionToken(): string {
 
 // Hash a session token (for storage)
 export async function hashSessionToken(token: string): Promise<string> {
-  const salt = await bcrypt.genSalt(10);
-  return bcrypt.hash(token, salt);
+  return createHash('sha256').update(token).digest('hex');
 }
 
 // Compare a plain token with its hash
 export async function verifySessionToken(token: string, hashedToken: string): Promise<boolean> {
-  return bcrypt.compare(token, hashedToken);
+  return (await hashSessionToken(token)) === hashedToken;
 }
 
 // Create a new session for a user
-export async function createSession(userId: string, expiresInSeconds = 24 * 60 * 60): Promise<{ token: string; cookieString: string }> {
+export async function createSession(
+  userId: string,
+  expiresInSeconds = 24 * 60 * 60,
+  queryable: Pick<PoolClient, 'query'> = pool,
+): Promise<{ token: string; cookieString: string }> {
   const token = generateSessionToken();
   const hashedToken = await hashSessionToken(token);
   const expiresAt = new Date(Date.now() + expiresInSeconds * 1000);
@@ -35,7 +38,7 @@ export async function createSession(userId: string, expiresInSeconds = 24 * 60 *
   `;
   const values = [hashedToken, userId, expiresAt];
 
-  await pool.query(query, values);
+  await queryable.query(query, values);
 
   // Create cookie string
   // In production, we should set Secure flag based on NODE_ENV
@@ -49,28 +52,6 @@ export async function createSession(userId: string, expiresInSeconds = 24 * 60 *
 export async function validateSession(token: string): Promise<string | null> {
   if (!token) return null;
 
-  // We need to hash the token to compare with the stored hash
-  // However, we cannot reverse the hash, so we must look up the session by token hash?
-  // But we don't have the hash of the token until we hash it, and we need to compare.
-  // Alternative: store the token hash and then hash the incoming token and compare.
-  // But we cannot index by hash because we don't have the hash of the incoming token until we compute it.
-  // So we must retrieve all sessions for the user? Not efficient.
-
-  // Instead, we can store the token (not hashed) in a secure way? But that's a security risk if the DB is leaked.
-
-  // Another approach: use a random token that we store as is, and then use a signed cookie so we can verify the token without hitting the DB for every request?
-  // But we still need to validate the token is in the DB to prevent token theft.
-
-  // We can do: store a random token (plain) in the DB, and sign the cookie with a secret. Then we can verify the cookie signature and extract the token, then look up the token in the DB.
-  // However, the task says to store only a hash of the session token in the database.
-
-  // Let's change: we will store a hash of the token, and to validate we must hash the incoming token and then compare with the stored hash.
-  // But we need to find the session by the hash of the token. We can compute the hash of the incoming token and then look up by that hash.
-  // However, we cannot use the hash as a lookup key because we don't have an index on token_hash? We can add an index.
-
-  // We'll change the session table to have an index on token_hash.
-
-  // For now, we'll assume we have an index on token_hash and we can do:
   const hashedToken = await hashSessionToken(token);
   const query = `
     SELECT user_id FROM ${SESSION_TABLE}
@@ -106,6 +87,28 @@ export async function deleteSessionsForUser(userId: string): Promise<void> {
   await pool.query(query, values);
 }
 
+// Get the session token from the request cookies
+export function getSessionCookie(request: Request): string | undefined {
+  const cookieHeader = request.headers.get('cookie') || '';
+  const cookies = cookieHeader.split(';').map(c => c.trim()).map(c => {
+    const [key, ...valueParts] = c.split('=');
+    return [key.trim(), valueParts.join('=').trim()];
+  });
+  const sessionCookie = cookies.find(([key]) => key === 'session');
+  return sessionCookie ? sessionCookie[1] : undefined;
+}
+
+// Set the session cookie on the response
+export function setSessionCookie(response: Response, cookieString: string): void {
+  response.headers.set('Set-Cookie', cookieString);
+}
+
+// Clear the session cookie
+export function clearSessionCookie(response: Response): void {
+  // Set an expired cookie to remove it
+  response.headers.set('Set-Cookie', 'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+}
+
 export default {
   generateSessionToken,
   hashSessionToken,
@@ -114,4 +117,7 @@ export default {
   validateSession,
   deleteSession,
   deleteSessionsForUser,
+  getSessionCookie,
+  setSessionCookie,
+  clearSessionCookie,
 };

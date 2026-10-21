@@ -1,0 +1,339 @@
+---
+interface Props {
+  activePage: 'overview' | 'transactions' | 'budgets';
+}
+
+const { activePage } = Astro.props;
+---
+
+<aside class="workspace-sidebar" aria-label="Main navigation">
+  <a class="brand" href="/" aria-label="UniBudget home">
+    <span class="brand-mark" aria-hidden="true">u</span>
+    <span>UniBudget</span>
+  </a>
+
+  <p class="nav-label">Workspace</p>
+  <nav aria-label="Workspace">
+    <ul class="sidebar-nav">
+      <li>
+        <a
+          class:list={['nav-item', { active: activePage === 'overview' }]}
+          href="/dashboard"
+          aria-current={activePage === 'overview' ? 'page' : undefined}
+        >
+          {activePage === 'overview' && <span class="nav-indicator" aria-hidden="true"></span>}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /></svg>
+          <span>Overview</span>
+        </a>
+      </li>
+      <li>
+        <a
+          class:list={['nav-item', { active: activePage === 'transactions' }]}
+          href="/transactions"
+          aria-current={activePage === 'transactions' ? 'page' : undefined}
+        >
+          {activePage === 'transactions' && <span class="nav-indicator" aria-hidden="true"></span>}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4z" /><path d="M8 9h8M8 13h5" /></svg>
+          <span>Transactions</span>
+        </a>
+      </li>
+      <li>
+        <a
+          class:list={['nav-item', { active: activePage === 'budgets' }]}
+          href="/budgets"
+          aria-current={activePage === 'budgets' ? 'page' : undefined}
+        >
+          {activePage === 'budgets' && <span class="nav-indicator" aria-hidden="true"></span>}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 19h17" /><path d="m7 15 4-4 3 2 6-7" /></svg>
+          <span>Budgets</span>
+        </a>
+      </li>
+      <li>
+        <span class="nav-item upcoming" aria-disabled="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="m19.4 15 .1.1a1.7 1.7 0 0 1-2.4 2.4l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a1.7 1.7 0 0 1-3.4 0v-.2a1.7 1.7 0 0 0-2.9-1.2l-.1.1a1.7 1.7 0 0 1-2.4-2.4l.1-.1a1.7 1.7 0 0 0-1.2-2.9H4a1.7 1.7 0 0 1 0-3.4h.2A1.7 1.7 0 0 0 5.4 5.8l-.1-.1a1.7 1.7 0 0 1 2.4-2.4l.1.1a1.7 1.7 0 0 0 2.9-1.2V2a1.7 1.7 0 0 1 3.4 0v.2A1.7 1.7 0 0 0 17 3.4l.1-.1a1.7 1.7 0 0 1 2.4 2.4l-.1.1a1.7 1.7 0 0 0 1.2 2.9h.2a1.7 1.7 0 0 1 0 3.4h-.2a1.7 1.7 0 0 0-1.2 2.9Z" /></svg>
+          <span>Settings</span>
+          <span class="nav-soon">Soon</span>
+        </span>
+      </li>
+    </ul>
+  </nav>
+
+  <div class="sidebar-bottom">
+    <div class="sidebar-note">
+      <span class="note-orb" aria-hidden="true"></span>
+      <p>Your money, with more clarity.</p>
+    </div>
+    <span class="sidebar-caption">PERSONAL FINANCE, MADE SIMPLE</span>
+  </div>
+</aside>
+
+<style>
+  .workspace-sidebar {
+    position: sticky;
+    top: 0;
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    height: 100vh;
+    min-height: 620px;
+    flex-direction: column;
+    padding: 29px 18px 21px;
+    border-right: 1px solid var(--glass-border);
+    background:
+      linear-gradient(180deg, rgba(21, 31, 48, 0.62), rgba(10, 15, 24, 0.82));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    backdrop-filter: blur(var(--glass-blur));
+  }
+
+  .brand {
+    display: flex;
+    width: fit-content;
+    align-items: center;
+    gap: 11px;
+    margin: 0 0 51px 5px;
+    color: var(--color-text-primary);
+    font-size: 1.04rem;
+    font-weight: 700;
+    letter-spacing: -0.035em;
+    text-decoration: none;
+  }
+
+  .brand:hover {
+    color: var(--color-text-primary);
+  }
+
+  .brand-mark {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border: 1px solid rgba(52, 211, 153, 0.4);
+    border-radius: var(--radius-md);
+    background: linear-gradient(145deg, rgba(52, 211, 153, 0.2), rgba(52, 211, 153, 0.05));
+    color: var(--color-accent-secondary);
+    font-size: 1.25rem;
+    line-height: 1;
+  }
+
+  .nav-label {
+    margin: 0 0 12px 11px;
+    color: var(--color-text-muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+  }
+
+  nav {
+    width: 100%;
+  }
+
+  .sidebar-nav {
+    display: grid;
+    gap: var(--space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .nav-item {
+    position: relative;
+    isolation: isolate;
+    display: flex;
+    min-height: 44px;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 0 11px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-secondary);
+    font-size: 0.84rem;
+    font-weight: 500;
+    text-decoration: none;
+  }
+
+  .nav-indicator {
+    position: absolute;
+    z-index: -1;
+    inset: 0;
+    border: 1px solid rgba(189, 207, 238, 0.2);
+    border-radius: inherit;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.085), transparent 58%),
+      linear-gradient(110deg, rgba(104, 151, 255, 0.16), rgba(104, 151, 255, 0.075));
+    box-shadow:
+      0 5px 16px rgba(0, 0, 0, 0.15),
+      inset 0 1px rgba(255, 255, 255, 0.09);
+    view-transition-name: workspace-nav-indicator;
+    pointer-events: none;
+  }
+
+  @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .nav-indicator {
+      background-color: rgba(38, 53, 78, 0.28);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+    }
+  }
+
+  .nav-item > svg,
+  .nav-item > span:not(.nav-indicator) {
+    position: relative;
+    z-index: 1;
+  }
+
+  .nav-item svg {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+  }
+
+  a.nav-item:hover {
+    background: rgba(255, 255, 255, 0.045);
+    color: var(--color-text-primary);
+  }
+
+  a.nav-item:active {
+    background: rgba(255, 255, 255, 0.075);
+  }
+
+  a.nav-item:focus-visible,
+  .brand:focus-visible {
+    outline: 3px solid var(--color-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .nav-item.active {
+    border-color: transparent;
+    background: transparent;
+    color: var(--color-accent-hover);
+    font-weight: 600;
+  }
+
+  .nav-item.active svg {
+    color: var(--color-accent-hover);
+  }
+
+  .nav-item.upcoming {
+    position: relative;
+    z-index: 1;
+    color: var(--color-text-muted);
+  }
+
+  .nav-soon {
+    margin-left: auto;
+    color: var(--color-text-muted);
+    font-size: 0.63rem;
+  }
+
+  .sidebar-bottom {
+    margin-top: auto;
+  }
+
+  .sidebar-note {
+    position: relative;
+    overflow: hidden;
+    margin: 0 2px 21px;
+    padding: 18px 15px;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    background:
+      linear-gradient(145deg, rgba(104, 151, 255, 0.09), transparent 72%),
+      var(--glass-surface);
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .workspace-sidebar {
+      background: #0d1420;
+    }
+  }
+
+  .note-orb {
+    position: absolute;
+    top: -23px;
+    right: -14px;
+    width: 70px;
+    height: 70px;
+    border: 1px solid rgba(52, 211, 153, 0.16);
+    border-radius: 50%;
+    box-shadow: 0 0 0 10px rgba(52, 211, 153, 0.025), 0 0 0 20px rgba(52, 211, 153, 0.02);
+  }
+
+  .sidebar-note p {
+    position: relative;
+    max-width: 130px;
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: 0.76rem;
+    line-height: 1.6;
+  }
+
+  .sidebar-caption {
+    display: block;
+    padding-left: 8px;
+    color: var(--color-text-muted);
+    font-size: 0.57rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+
+  @media (max-width: 720px) {
+    .workspace-sidebar {
+      position: static;
+      display: block;
+      width: 100%;
+      height: auto;
+      min-height: 0;
+      padding: 14px var(--workspace-content-gutter) 12px;
+      border-right: 0;
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .brand {
+      margin: 0 0 13px;
+      font-size: 1rem;
+    }
+
+    .nav-label,
+    .sidebar-bottom {
+      display: none;
+    }
+
+    nav {
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    .sidebar-nav {
+      display: flex;
+      width: max-content;
+      min-width: 100%;
+      gap: 5px;
+    }
+
+    .sidebar-nav li {
+      flex: 0 0 auto;
+    }
+
+    .nav-item {
+      min-height: 38px;
+      gap: 8px;
+      padding: 0 10px;
+      font-size: 0.75rem;
+    }
+
+    .nav-item svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .nav-soon {
+      display: none;
+    }
+  }
+</style>

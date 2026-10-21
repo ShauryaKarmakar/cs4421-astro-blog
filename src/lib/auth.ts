@@ -4,6 +4,14 @@ import bcrypt from 'bcryptjs';
 const SALT_ROUNDS = 12;
 
 /**
+ * A pre-computed dummy bcrypt hash using 12 salt rounds.
+ * Used for constant-time comparison when an email is not found during login,
+ * ensuring timing differences cannot be used for user enumeration.
+ */
+export const DUMMY_PASSWORD_HASH =
+  '$2a$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234';
+
+/**
  * Hash a plain text password
  * @param password - plain text password
  * @returns hashed password
@@ -26,4 +34,5 @@ export async function verifyPassword(password: string, hashed: string): Promise<
 export default {
   hashPassword,
   verifyPassword,
+  DUMMY_PASSWORD_HASH,
 };

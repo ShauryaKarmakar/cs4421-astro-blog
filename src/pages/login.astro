@@ -1,0 +1,211 @@
+---
+import BaseHead from '@/components/BaseHead.astro';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <BaseHead title="Sign in - UniBudget" description="Sign in to your UniBudget account." />
+  </head>
+  <body class="auth-page">
+    <main class="auth-shell">
+      <a class="brand" href="/" aria-label="UniBudget home">
+        <span class="brand-mark" aria-hidden="true">u</span>
+        <span>UniBudget</span>
+      </a>
+
+      <section class="auth-card login-card" aria-labelledby="auth-title">
+        <div class="login-card-topline">
+          <span class="login-section-label">MEMBER ACCESS</span>
+          <span class="login-live-mark"><span aria-hidden="true"></span> YOUR MONEY, IN FOCUS</span>
+        </div>
+        <div class="auth-intro">
+          <p class="auth-eyebrow">Welcome back</p>
+          <h1 id="auth-title">Your finances, in focus.</h1>
+          <p class="auth-subtitle">Sign in to return to your UniBudget overview.</p>
+        </div>
+
+        <form id="loginForm" class="auth-form">
+          <div class="form-group">
+            <label for="email">Email address</label>
+            <input
+              type="email"
+              id="email"
+              name="email"
+              autocomplete="email"
+              placeholder="you@example.com"
+              aria-describedby="auth-error"
+              required
+            />
+          </div>
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input
+              type="password"
+              id="password"
+              name="password"
+              autocomplete="current-password"
+              placeholder="Enter your password"
+              aria-describedby="auth-error"
+              required
+            />
+          </div>
+          <button class="auth-submit" type="submit">
+            <span>Continue to dashboard</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M10 5l5 5-5 5" /></svg>
+          </button>
+          <p id="auth-error" class="auth-error" role="alert" aria-live="polite"></p>
+        </form>
+
+        <div class="login-signup">
+          <p class="auth-switch">
+            New to UniBudget? <a href="/register">Create an account</a>
+          </p>
+        </div>
+        <p class="auth-footnote">A clearer view of your money, one step at a time.</p>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById('loginForm') as HTMLFormElement;
+      const errorDiv = document.getElementById('auth-error') as HTMLParagraphElement;
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorDiv.textContent = '';
+
+        const formData = new FormData(form);
+        const email = formData.get('email') as string;
+        const password = formData.get('password') as string;
+
+        try {
+          const response = await fetch('/api/auth/session', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ email, password }),
+          });
+
+          if (response.ok) {
+            // Redirect to dashboard or previous page
+            window.location.href = '/dashboard';
+          } else {
+            const errorData = await response.json();
+            errorDiv.textContent = errorData.error || 'Login failed';
+          }
+        } catch {
+          errorDiv.textContent = 'An error occurred';
+        }
+      });
+    </script>
+  </body>
+</html>
+
+<style>
+  .login-card {
+    position: relative;
+    overflow: hidden;
+    padding-top: 28px;
+  }
+
+  .login-card::before {
+    position: absolute;
+    top: 0;
+    right: 32px;
+    left: 32px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(91, 140, 255, 0.62), transparent);
+    content: '';
+  }
+
+  .login-card-topline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 31px;
+  }
+
+  .login-section-label,
+  .login-live-mark {
+    color: #75849a;
+    font-size: 0.59rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+
+  .login-live-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: #8292a6;
+    font-size: 0.55rem;
+    letter-spacing: 0.08em;
+  }
+
+  .login-live-mark span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-accent-secondary);
+    box-shadow: 0 0 10px rgba(52, 211, 153, 0.6);
+  }
+
+  .login-card .auth-intro {
+    margin-bottom: 29px;
+  }
+
+  .login-card .auth-eyebrow {
+    margin-bottom: 10px;
+  }
+
+  .login-card .auth-submit {
+    gap: 11px;
+    margin-top: 2px;
+  }
+
+  .login-card .auth-submit svg {
+    width: 17px;
+    height: 17px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+    transition: transform 150ms ease;
+  }
+
+  .login-card .auth-submit:hover svg {
+    transform: translateX(3px);
+  }
+
+  .login-signup {
+    margin-top: 21px;
+    padding-top: 2px;
+  }
+
+  .login-signup .auth-switch {
+    margin: 0;
+  }
+
+  .login-card .auth-footnote {
+    margin-top: 22px;
+  }
+
+  @media (max-width: 520px) {
+    .login-card {
+      padding-top: 25px;
+    }
+
+    .login-card-topline {
+      margin-bottom: 25px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .login-card .auth-submit svg {
+      transition: none;
+    }
+  }
+</style>

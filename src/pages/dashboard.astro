@@ -1,0 +1,1729 @@
+---
+import BaseHead from '@/components/BaseHead.astro';
+import WorkspaceLayout from '@/components/WorkspaceLayout.astro';
+import { getSessionCookie, validateSession } from '@/lib/session';
+
+// Check whether the visitor has a valid session.
+const token = getSessionCookie(Astro.request);
+const userId = token ? await validateSession(token) : null;
+const today = new Intl.DateTimeFormat('en-GB', {
+  weekday: 'long',
+  month: 'long',
+  day: 'numeric',
+}).format(new Date());
+
+// Reject visitors who are not authenticated.
+if (!userId) {
+  return Astro.redirect('/login', 303);
+}
+---
+
+<!doctype html>
+<html lang="en" class="workspace-page">
+  <head>
+    <BaseHead title="Overview - UniBudget" description="Your UniBudget financial overview." />
+  </head>
+  <body class="auth-page workspace-page dashboard-page">
+    <WorkspaceLayout activePage="overview">
+      <main class="workspace-content dashboard-main" id="overview">
+        <header class="topbar">
+          <div class="welcome">
+            <p class="eyebrow">{today}</p>
+            <h1>Welcome to your overview</h1>
+            <p class="topbar-subtitle">A place to check your finances.</p>
+          </div>
+        </header>
+
+        <section class="summary-section" aria-labelledby="summary-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="summary-title">Your snapshot</h2>
+              <p>Your recorded income and expenses, in one place.</p>
+            </div>
+            <a class="summary-link" href="/transactions">View transaction history</a>
+          </div>
+
+          <div class="summary-grid">
+            <article class="summary-card balance-card">
+              <div class="metric-heading">
+                <span class="metric-icon balance-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3" /><path d="M3 9h18M7 15h3" /></svg>
+                </span>
+                <span class="metric-label">Net balance</span>
+              </div>
+              <p class="metric-value" id="total-balance">—</p>
+              <p class="metric-note">All recorded income minus expenses</p>
+            </article>
+
+            <article class="summary-card">
+              <div class="metric-heading">
+                <span class="metric-icon income-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+                </span>
+                <span class="metric-label">Total income</span>
+              </div>
+              <p class="metric-value income-value" id="total-income">—</p>
+              <p class="metric-note">Across all recorded transactions</p>
+            </article>
+
+            <article class="summary-card">
+              <div class="metric-heading">
+                <span class="metric-icon expense-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 5v14M18 13l-6 6-6-6" /></svg>
+                </span>
+                <span class="metric-label">Total expenses</span>
+              </div>
+              <p class="metric-value expense-value" id="total-expenses">—</p>
+              <p class="metric-note">Across all recorded transactions</p>
+            </article>
+          </div>
+          <div id="dashboard-load-state" class="dashboard-load-state" role="status" aria-live="polite">
+            <span id="dashboard-load-message">Loading your transaction data…</span>
+            <button id="dashboard-retry" type="button" hidden>Try again</button>
+          </div>
+        </section>
+
+        <section class="budget-panel panel" aria-labelledby="budget-title">
+          <div class="budget-heading">
+            <div>
+              <p class="section-kicker">MONTHLY PLAN</p>
+              <h2 id="budget-title">Monthly budget</h2>
+              <p>Your available amount, eligible expenses and rollover for this month.</p>
+            </div>
+            <a class="budget-view-link" href="/budgets">View budget details</a>
+          </div>
+          <p id="budget-load-status" class="budget-load-status" role="status" aria-live="polite">Loading your monthly budget…</p>
+          <button id="budget-retry" class="budget-retry" type="button" hidden>Try again</button>
+          <div id="dashboard-budget" class="dashboard-budget" hidden>
+            <div class="budget-summary-heading">
+              <div>
+                <p class="budget-card-kicker">TOTAL MONTHLY BUDGET</p>
+                <h3 class="budget-card-title">Overall spending</h3>
+              </div>
+              <span id="budget-status" class="budget-status">Loading</span>
+            </div>
+            <div id="budget-balance" class="budget-balance">
+              <p class="budget-balance-label">Remaining this month</p>
+              <p id="budget-remaining" class="budget-balance-value">—</p>
+              <p id="budget-balance-note" class="budget-balance-note"></p>
+            </div>
+            <dl class="budget-metrics">
+              <div class="budget-metric">
+                <dt class="budget-metric-label">Base budget</dt>
+                <dd id="budget-base" class="budget-metric-value">—</dd>
+              </div>
+              <div class="budget-metric">
+                <dt class="budget-metric-label">Opening rollover</dt>
+                <dd id="budget-rollover" class="budget-metric-value">—</dd>
+              </div>
+              <div class="budget-metric">
+                <dt class="budget-metric-label">Available budget</dt>
+                <dd id="budget-available" class="budget-metric-value">—</dd>
+              </div>
+              <div class="budget-metric">
+                <dt class="budget-metric-label">Eligible spending</dt>
+                <dd id="budget-spending" class="budget-metric-value">—</dd>
+              </div>
+            </dl>
+            <div class="budget-progress-section">
+              <div class="budget-progress-heading">
+                <span class="budget-progress-caption">Spending progress</span>
+                <span id="budget-percentage" class="budget-progress-value">—</span>
+              </div>
+              <progress id="budget-progress" class="budget-progress" max="100" value="0" aria-label="Monthly budget spending progress"></progress>
+              <p id="budget-progress-note" class="budget-progress-note"></p>
+            </div>
+          </div>
+          <p class="rollover-explanation">
+            <strong>Rollover is automatic.</strong>
+            Unused budget adds to next month; overspending reduces it.
+          </p>
+        </section>
+
+        <section class="content-grid" aria-label="Spending and transactions">
+          <article class="panel spending-panel" aria-labelledby="spending-title">
+            <div class="panel-heading">
+              <div>
+                <h2 id="spending-title">Income &amp; expenses</h2>
+                <p>Compare your totals across all recorded transactions.</p>
+              </div>
+              <span class="period-label">All time</span>
+            </div>
+            <div id="cashflow-content" class="cashflow-content" hidden>
+              <div class="cashflow-item">
+                <div class="cashflow-label">
+                  <span>Income</span>
+                  <strong id="month-income">—</strong>
+                </div>
+                <div class="cashflow-track" aria-hidden="true">
+                  <span id="month-income-bar" class="cashflow-bar income-bar"></span>
+                </div>
+              </div>
+              <div class="cashflow-item">
+                <div class="cashflow-label">
+                  <span>Expenses</span>
+                  <strong id="month-expenses">—</strong>
+                </div>
+                <div class="cashflow-track" aria-hidden="true">
+                  <span id="month-expenses-bar" class="cashflow-bar expense-bar"></span>
+                </div>
+              </div>
+              <p class="cashflow-note">Bar lengths compare your total income and expenses; small non-zero amounts remain visible.</p>
+            </div>
+            <div id="cashflow-empty" class="cashflow-empty" hidden>
+              <span class="empty-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h17" /><path d="m7 15 4-4 3 2 6-7" /></svg>
+              </span>
+              <h3>No transaction activity yet</h3>
+              <p>Your recorded income and expenses will appear here.</p>
+            </div>
+          </article>
+
+          <article class="panel transactions-panel" aria-labelledby="transactions-title">
+            <div class="panel-heading">
+              <div>
+                <h2 id="transactions-title">Recent transactions</h2>
+                <p>Your latest recorded activity.</p>
+              </div>
+              <a class="panel-link" href="/transactions">View all</a>
+            </div>
+            <p id="recent-status" class="recent-status" role="status" aria-live="polite">
+              Loading recent transactions…
+            </p>
+            <div id="recent-empty" class="transaction-empty" hidden>
+              <span class="empty-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="3" /><path d="M8 8h8M8 12h5M8 16h3" /></svg>
+              </span>
+              <h3>No transactions yet</h3>
+              <p>Add your first income or expense to start building your history.</p>
+            </div>
+            <ul id="recent-list" class="recent-list" hidden></ul>
+            <a class="add-button" href="/transactions#transaction-form">
+              <span aria-hidden="true">+</span> Add transaction
+            </a>
+          </article>
+        </section>
+
+        <footer class="dashboard-footer">
+          <span>Figures are based on your recorded transactions.</span>
+        </footer>
+      </main>
+    </WorkspaceLayout>
+    <script>
+      import {
+        amountInCents,
+        calculateFinancialTotals,
+        getCalendarDateInTimeZone,
+        isValidTimeZone,
+      } from '../lib/financialCalculations';
+      import { formatCurrencyCents } from '../lib/currencyFormatting';
+
+      interface Transaction {
+        id: string;
+        type: 'income' | 'expense';
+        amount: string;
+        category: string;
+        description: string;
+        transactionDate: string;
+        storeName: string | null;
+      }
+
+      interface TransactionListResponse {
+        transactions: Transaction[];
+      }
+
+      interface AccountResponse {
+        user?: {
+          profile?: {
+            timezone?: unknown;
+          };
+        };
+      }
+
+      const balanceValue = document.querySelector<HTMLElement>('#total-balance');
+      const incomeValue = document.querySelector<HTMLElement>('#total-income');
+      const expensesValue = document.querySelector<HTMLElement>('#total-expenses');
+      const loadState = document.querySelector<HTMLDivElement>('#dashboard-load-state');
+      const loadMessage = document.querySelector<HTMLSpanElement>('#dashboard-load-message');
+      const retryButton = document.querySelector<HTMLButtonElement>('#dashboard-retry');
+      const monthIncome = document.querySelector<HTMLElement>('#month-income');
+      const monthExpenses = document.querySelector<HTMLElement>('#month-expenses');
+      const monthIncomeBar = document.querySelector<HTMLSpanElement>('#month-income-bar');
+      const monthExpensesBar = document.querySelector<HTMLSpanElement>('#month-expenses-bar');
+      const cashflowContent = document.querySelector<HTMLDivElement>('#cashflow-content');
+      const cashflowEmpty = document.querySelector<HTMLDivElement>('#cashflow-empty');
+      const recentStatus = document.querySelector<HTMLParagraphElement>('#recent-status');
+      const recentEmpty = document.querySelector<HTMLDivElement>('#recent-empty');
+      const recentList = document.querySelector<HTMLUListElement>('#recent-list');
+      const budgetLoadStatus = document.querySelector<HTMLParagraphElement>('#budget-load-status');
+      const budgetRetry = document.querySelector<HTMLButtonElement>('#budget-retry');
+      const budgetSummary = document.querySelector<HTMLDivElement>('#dashboard-budget');
+      const budgetStatus = document.querySelector<HTMLSpanElement>('#budget-status');
+      const budgetBalance = document.querySelector<HTMLDivElement>('#budget-balance');
+      const budgetRemaining = document.querySelector<HTMLElement>('#budget-remaining');
+      const budgetBalanceNote = document.querySelector<HTMLElement>('#budget-balance-note');
+      const budgetBase = document.querySelector<HTMLElement>('#budget-base');
+      const budgetRollover = document.querySelector<HTMLElement>('#budget-rollover');
+      const budgetAvailable = document.querySelector<HTMLElement>('#budget-available');
+      const budgetSpending = document.querySelector<HTMLElement>('#budget-spending');
+      const budgetPercentage = document.querySelector<HTMLElement>('#budget-percentage');
+      const budgetProgress = document.querySelector<HTMLProgressElement>('#budget-progress');
+      const budgetProgressNote = document.querySelector<HTMLElement>('#budget-progress-note');
+      const amountPattern = /^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/;
+      let dashboardTransactions: Transaction[] | null = null;
+      let dashboardTimeZone = '';
+      let lastRenderedDate: string | null = null;
+      let lastBudgetDate: string | null = null;
+
+      type BudgetStatus = 'under' | 'near' | 'over' | 'no-available' | 'negative-available' | 'unconfigured';
+      interface Budget {
+        month: string;
+        hasBudget: boolean;
+        baseBudget: string;
+        openingRollover: string;
+        availableBudget: string;
+        eligibleExpenses: string;
+        remainingBudget: string;
+        spendingPercentage: string | null;
+        status: BudgetStatus;
+      }
+
+      interface BudgetResponse {
+        budget: Budget;
+        today: string;
+      }
+
+      function isTransaction(value: unknown): value is Transaction {
+        if (typeof value !== 'object' || value === null) return false;
+        const transaction = value as Record<string, unknown>;
+        return (
+          typeof transaction.id === 'string' &&
+          (transaction.type === 'income' || transaction.type === 'expense') &&
+          typeof transaction.amount === 'string' &&
+          amountPattern.test(transaction.amount) &&
+          Number(transaction.amount) > 0 &&
+          typeof transaction.category === 'string' &&
+          typeof transaction.description === 'string' &&
+          typeof transaction.transactionDate === 'string' &&
+          /^\d{4}-\d{2}-\d{2}$/.test(transaction.transactionDate) &&
+          (typeof transaction.storeName === 'string' || transaction.storeName === null)
+        );
+      }
+
+      function isTransactionListResponse(value: unknown): value is TransactionListResponse {
+        return (
+          typeof value === 'object' &&
+          value !== null &&
+          'transactions' in value &&
+          Array.isArray(value.transactions) &&
+          value.transactions.every(isTransaction)
+        );
+      }
+
+      function isAccountResponse(value: unknown): value is AccountResponse {
+        if (typeof value !== 'object' || value === null || !('user' in value)) return false;
+        const user = value.user;
+        return (
+          typeof user === 'object' &&
+          user !== null &&
+          'profile' in user &&
+          typeof user.profile === 'object' &&
+          user.profile !== null &&
+          'timezone' in user.profile
+        );
+      }
+
+      function formatCurrency(cents: bigint): string {
+        return formatCurrencyCents(cents);
+      }
+
+      function formatBudgetAmount(amount: string): string {
+        const cents = amountInCents(amount.startsWith('-') ? amount.slice(1) : amount);
+        return `${amount.startsWith('-') ? '-' : ''}${formatCurrency(cents)}`;
+      }
+
+      function isBudgetResponse(value: unknown): value is BudgetResponse {
+        if (
+          typeof value !== 'object' ||
+          value === null ||
+          !('budget' in value) ||
+          !('today' in value) ||
+          typeof value.today !== 'string' ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(value.today)
+        ) return false;
+        const budget = value.budget;
+        if (typeof budget !== 'object' || budget === null) return false;
+        const record = budget as Record<string, unknown>;
+        const moneyPattern = /^-?(?:0|[1-9]\d*)\.\d{2}$/;
+        const statuses: BudgetStatus[] = [
+          'under',
+          'near',
+          'over',
+          'no-available',
+          'negative-available',
+          'unconfigured',
+        ];
+        return (
+          typeof record.month === 'string' &&
+          /^\d{4}-\d{2}$/.test(record.month) &&
+          typeof record.hasBudget === 'boolean' &&
+          typeof record.baseBudget === 'string' &&
+          moneyPattern.test(record.baseBudget) &&
+          typeof record.openingRollover === 'string' &&
+          moneyPattern.test(record.openingRollover) &&
+          typeof record.availableBudget === 'string' &&
+          moneyPattern.test(record.availableBudget) &&
+          typeof record.eligibleExpenses === 'string' &&
+          moneyPattern.test(record.eligibleExpenses) &&
+          typeof record.remainingBudget === 'string' &&
+          moneyPattern.test(record.remainingBudget) &&
+          (record.spendingPercentage === null ||
+            (typeof record.spendingPercentage === 'string' && /^\d+(?:\.\d+)?$/.test(record.spendingPercentage))) &&
+          typeof record.status === 'string' &&
+          statuses.includes(record.status as BudgetStatus)
+        );
+      }
+
+      function formatDate(date: string): string {
+        const [year, month, day] = date.split('-').map(Number);
+        return new Intl.DateTimeFormat(undefined, {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }).format(new Date(year, month - 1, day));
+      }
+
+      function setLoadError(message: string, expired = false): void {
+        if (loadState) loadState.classList.add('error');
+        if (loadMessage) loadMessage.textContent = message;
+        if (retryButton) retryButton.hidden = expired;
+        if (recentStatus) recentStatus.textContent = 'Recent transactions could not be loaded.';
+        if (expired) window.setTimeout(() => window.location.assign('/login'), 900);
+      }
+
+      function renderCashflow(transactions: Transaction[], income: bigint, expenses: bigint): void {
+        if (!cashflowContent || !cashflowEmpty || !monthIncome || !monthExpenses) return;
+        if (transactions.length === 0) {
+          cashflowContent.hidden = true;
+          cashflowEmpty.hidden = false;
+          return;
+        }
+
+        monthIncome.textContent = formatCurrency(income);
+        monthExpenses.textContent = formatCurrency(expenses);
+        const largest = income > expenses ? income : expenses;
+        const barWidth = (amount: bigint): number => {
+          if (amount === 0n || largest === 0n) return 0;
+          const proportion = Number((amount * 10000n) / largest) / 100;
+          return Math.max(proportion, 8);
+        };
+        const incomePercent = barWidth(income);
+        const expensesPercent = barWidth(expenses);
+        if (monthIncomeBar) monthIncomeBar.style.width = `${incomePercent}%`;
+        if (monthExpensesBar) monthExpensesBar.style.width = `${expensesPercent}%`;
+        cashflowEmpty.hidden = true;
+        cashflowContent.hidden = false;
+      }
+
+      function renderRecentTransactions(transactions: Transaction[], today: string): void {
+        if (!recentStatus || !recentEmpty || !recentList) return;
+        recentStatus.hidden = true;
+        recentList.replaceChildren();
+        if (transactions.length === 0) {
+          recentEmpty.hidden = false;
+          recentList.hidden = true;
+          return;
+        }
+
+        recentEmpty.hidden = true;
+        recentList.hidden = false;
+        for (const transaction of transactions.slice(0, 5)) {
+          const item = document.createElement('li');
+          item.className = 'recent-row';
+          const upcoming = transaction.transactionDate > today;
+          const type = document.createElement('span');
+          type.className = `recent-type ${transaction.type}${upcoming ? ' upcoming' : ''}`;
+          type.textContent = upcoming
+            ? `Upcoming ${transaction.type}`
+            : transaction.type === 'income'
+              ? 'Income'
+              : 'Expense';
+
+          const date = document.createElement('time');
+          date.className = 'recent-date';
+          date.dateTime = transaction.transactionDate;
+          date.textContent = formatDate(transaction.transactionDate);
+
+          const amount = document.createElement('span');
+          amount.className = `recent-amount ${transaction.type}`;
+          amount.textContent = `${transaction.type === 'income' ? '+' : '−'}${formatCurrency(
+            amountInCents(transaction.amount),
+          )}`;
+          amount.setAttribute(
+            'aria-label',
+            `${upcoming ? 'Upcoming ' : ''}${transaction.type === 'income' ? 'income' : 'expense'} ${formatCurrency(
+              amountInCents(transaction.amount),
+            )}`,
+          );
+          item.append(type, date, amount);
+          recentList.append(item);
+        }
+      }
+
+      function renderDashboard(transactions: Transaction[], timeZone: string): void {
+        const today = getCalendarDateInTimeZone(new Date(), timeZone);
+        const totals = calculateFinancialTotals(transactions, today);
+        lastRenderedDate = today;
+
+        if (balanceValue) balanceValue.textContent = formatCurrency(totals.netBalanceCents);
+        if (incomeValue) incomeValue.textContent = formatCurrency(totals.incomeCents);
+        if (expensesValue) expensesValue.textContent = formatCurrency(totals.expenseCents);
+        renderCashflow(transactions, totals.incomeCents, totals.expenseCents);
+        renderRecentTransactions(transactions, today);
+        if (loadState) loadState.hidden = true;
+      }
+
+      function renderBudget(budget: Budget): void {
+        if (
+          !budgetSummary ||
+          !budgetStatus ||
+          !budgetBalance ||
+          !budgetRemaining ||
+          !budgetBalanceNote ||
+          !budgetBase ||
+          !budgetRollover ||
+          !budgetAvailable ||
+          !budgetSpending ||
+          !budgetPercentage ||
+          !budgetProgress ||
+          !budgetProgressNote
+        ) return;
+
+        const statusCopy: Record<BudgetStatus, string> = {
+          under: 'Under budget',
+          near: 'Near budget',
+          over: 'Over budget',
+          'no-available': 'No budget remaining',
+          'negative-available': 'Overspent before this month',
+          unconfigured: 'No budget set',
+        };
+        budgetStatus.textContent = statusCopy[budget.status];
+        budgetStatus.className = `budget-status ${budget.status}`;
+        budgetStatus.setAttribute('aria-label', `Budget status: ${statusCopy[budget.status]}`);
+
+        budgetRemaining.textContent = formatBudgetAmount(budget.remainingBudget);
+        budgetBalance.classList.toggle('is-negative', budget.remainingBudget.startsWith('-'));
+        budgetBalanceNote.textContent = budget.remainingBudget.startsWith('-')
+          ? 'You have spent more than the available budget.'
+          : budget.status === 'unconfigured'
+            ? 'No base budget is set for this month.'
+            : 'Available to spend after eligible expenses.';
+        budgetBase.textContent = formatBudgetAmount(budget.baseBudget);
+        budgetRollover.textContent = formatBudgetAmount(budget.openingRollover);
+        budgetAvailable.textContent = formatBudgetAmount(budget.availableBudget);
+        budgetSpending.textContent = formatBudgetAmount(budget.eligibleExpenses);
+
+        budgetProgress.className = `budget-progress ${budget.status}`;
+        if (budget.spendingPercentage === null) {
+          budgetPercentage.textContent = '—';
+          budgetProgress.hidden = true;
+          budgetProgressNote.textContent = budget.status === 'negative-available'
+            ? 'Prior overspending has reduced the available budget below zero.'
+            : budget.status === 'over'
+              ? 'Spending exceeded the available amount, even though it is zero.'
+              : budget.status === 'unconfigured'
+                ? 'No positive base amount or rollover is available for this month.'
+                : 'A spending percentage is unavailable when the available budget is zero.';
+        } else {
+          const percentage = Number(budget.spendingPercentage);
+          budgetPercentage.textContent = `${budget.spendingPercentage}%`;
+          budgetProgress.hidden = false;
+          budgetProgress.value = Math.max(0, Math.min(100, percentage));
+          budgetProgress.setAttribute(
+            'aria-label',
+            `Spending progress: ${budget.spendingPercentage}% of available budget used`,
+          );
+          budgetProgress.setAttribute('aria-valuetext', `${budget.spendingPercentage}% spent`);
+          budgetProgressNote.textContent = percentage > 100
+            ? `${budget.spendingPercentage}% of the available budget used`
+            : `${formatBudgetAmount(budget.eligibleExpenses)} spent of ${formatBudgetAmount(budget.availableBudget)} available`;
+        }
+        budgetSummary.hidden = false;
+      }
+
+      async function loadBudget(): Promise<void> {
+        if (!budgetLoadStatus || !budgetSummary) return;
+        if (dashboardTimeZone) {
+          lastBudgetDate = getCalendarDateInTimeZone(new Date(), dashboardTimeZone);
+        }
+        budgetLoadStatus.hidden = false;
+        budgetLoadStatus.className = 'budget-load-status';
+        budgetLoadStatus.textContent = 'Loading your monthly budget…';
+        if (budgetRetry) budgetRetry.hidden = true;
+        budgetSummary.hidden = true;
+        try {
+          const response = await fetch('/api/budgets', {
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+          });
+          if (response.status === 401) {
+            budgetLoadStatus.className = 'budget-load-status error';
+            budgetLoadStatus.textContent = 'Your session has expired. Please sign in again.';
+            return;
+          }
+          const result: unknown = await response.json();
+          if (!response.ok) {
+            const errorMessage =
+              typeof result === 'object' &&
+              result !== null &&
+              'error' in result &&
+              typeof result.error === 'string'
+                ? result.error
+                : 'Unable to load your monthly budget.';
+            throw new Error(errorMessage);
+          }
+          if (!isBudgetResponse(result)) {
+            throw new Error('The server returned an unexpected monthly budget response.');
+          }
+          renderBudget(result.budget);
+          lastBudgetDate = result.today;
+          budgetLoadStatus.hidden = true;
+        } catch (error) {
+          budgetLoadStatus.className = 'budget-load-status error';
+          budgetLoadStatus.textContent = error instanceof Error
+            ? error.message
+            : 'Unable to load your monthly budget.';
+          if (budgetRetry) budgetRetry.hidden = false;
+        }
+      }
+
+      async function loadDashboard(): Promise<void> {
+        void loadBudget();
+        if (loadState) {
+          loadState.hidden = false;
+          loadState.classList.remove('error');
+        }
+        if (loadMessage) loadMessage.textContent = 'Loading your transaction data…';
+        if (retryButton) retryButton.hidden = true;
+        try {
+          const [transactionsResponse, accountResponse] = await Promise.all([
+            fetch('/api/transactions', {
+              headers: { Accept: 'application/json' },
+              credentials: 'same-origin',
+            }),
+            fetch('/api/auth/me', {
+              headers: { Accept: 'application/json' },
+              credentials: 'same-origin',
+            }),
+          ]);
+          if (transactionsResponse.status === 401 || accountResponse.status === 401) {
+            setLoadError('Your session has expired. Redirecting you to sign in…', true);
+            return;
+          }
+          if (!transactionsResponse.ok) {
+            setLoadError('Unable to load your transactions. Try again in a moment.');
+            return;
+          }
+          if (!accountResponse.ok) {
+            setLoadError('Unable to load your configured timezone. Try again in a moment.');
+            return;
+          }
+
+          const [transactionsBody, accountBody]: [unknown, unknown] = await Promise.all([
+            transactionsResponse.json(),
+            accountResponse.json(),
+          ]);
+          if (!isTransactionListResponse(transactionsBody)) {
+            setLoadError('The server returned an unexpected transaction response.');
+            return;
+          }
+          if (!isAccountResponse(accountBody)) {
+            setLoadError('The server returned unexpected account settings.');
+            return;
+          }
+          const timeZone = accountBody.user?.profile?.timezone;
+          if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) {
+            setLoadError('Unable to determine your configured timezone. Check your profile and try again.');
+            return;
+          }
+          dashboardTransactions = transactionsBody.transactions;
+          dashboardTimeZone = timeZone;
+          if (!lastBudgetDate) {
+            lastBudgetDate = getCalendarDateInTimeZone(new Date(), dashboardTimeZone);
+          }
+          renderDashboard(dashboardTransactions, dashboardTimeZone);
+        } catch {
+          setLoadError('Unable to reach the server. Check your connection and try again.');
+        }
+      }
+
+      window.setInterval(() => {
+        if (!dashboardTransactions) return;
+        const today = getCalendarDateInTimeZone(new Date(), dashboardTimeZone);
+        if (today !== lastRenderedDate) {
+          renderDashboard(dashboardTransactions, dashboardTimeZone);
+        }
+        if (today !== lastBudgetDate) {
+          void loadBudget();
+        }
+      }, 60_000);
+
+      retryButton?.addEventListener('click', () => void loadDashboard());
+      budgetRetry?.addEventListener('click', () => void loadBudget());
+      void loadDashboard();
+    </script>
+  </body>
+</html>
+
+<style>
+  .dashboard-main {
+    --border: var(--color-border);
+    --muted: var(--color-text-secondary);
+    --soft: var(--color-text-muted);
+    color: var(--color-text-primary);
+  }
+
+  .metric-icon svg,
+  .empty-icon svg {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 25px;
+    margin-bottom: 39px;
+  }
+
+  .welcome .eyebrow {
+    margin: 0 0 9px;
+    color: var(--color-text-muted);
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: 0.035em;
+  }
+
+  .dashboard-main h1 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: clamp(1.65rem, 3vw, 2.05rem);
+    font-weight: 600;
+    letter-spacing: -0.045em;
+    line-height: 1.2;
+  }
+
+  .topbar-subtitle {
+    margin: 8px 0 0;
+    color: var(--muted);
+    font-size: 0.87rem;
+  }
+
+  .summary-section {
+    margin-bottom: 25px;
+  }
+
+  .dashboard-main [hidden] {
+    display: none !important;
+  }
+
+  .section-heading,
+  .panel-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .section-heading {
+    margin-bottom: 17px;
+  }
+
+  .dashboard-main h2 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  .section-heading p,
+  .panel-heading p {
+    margin: 5px 0 0;
+    color: var(--soft);
+    font-size: 0.75rem;
+  }
+
+  .summary-link,
+  .panel-link {
+    display: inline-flex;
+    min-height: 34px;
+    align-items: center;
+    justify-content: center;
+    padding: 0 10px;
+    border: 1px solid rgba(91, 140, 255, 0.22);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+  }
+
+  .summary-link:hover,
+  .panel-link:hover {
+    border-color: rgba(91, 140, 255, 0.42);
+    background: rgba(91, 140, 255, 0.2);
+    color: #b3c9ff;
+  }
+
+  .summary-link:active,
+  .panel-link:active,
+  .add-button:active {
+    transform: translateY(0);
+    background: rgba(91, 140, 255, 0.24);
+  }
+
+  .summary-link:focus-visible,
+  .panel-link:focus-visible,
+  .add-button:focus-visible,
+  #dashboard-retry:focus-visible {
+    outline: 3px solid var(--color-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 13px;
+  }
+
+  .summary-card,
+  .panel {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background:
+      linear-gradient(145deg, var(--glass-highlight), transparent 42%),
+      linear-gradient(150deg, var(--glass-surface-strong), var(--glass-surface));
+    box-shadow: var(--glass-shadow);
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    backdrop-filter: blur(var(--glass-blur));
+  }
+
+  .summary-card {
+    min-width: 0;
+    padding: 17px 17px 15px;
+  }
+
+  .balance-card {
+    border-color: rgba(143, 177, 255, 0.2);
+    background:
+      linear-gradient(145deg, rgba(106, 148, 240, 0.13), transparent 60%),
+      linear-gradient(150deg, var(--glass-surface-strong), var(--glass-surface));
+  }
+
+  .metric-heading {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .metric-icon {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid rgba(148, 163, 184, 0.11);
+    border-radius: 9px;
+    background: rgba(148, 163, 184, 0.06);
+    color: #9bacc0;
+  }
+
+  .metric-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .balance-icon {
+    border-color: rgba(91, 140, 255, 0.2);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+  }
+
+  .income-icon {
+    border-color: rgba(52, 211, 153, 0.16);
+    background: rgba(52, 211, 153, 0.08);
+    color: var(--color-success);
+  }
+
+  .expense-icon {
+    color: var(--color-danger);
+  }
+
+  .metric-label {
+    overflow: hidden;
+    color: var(--color-text-secondary);
+    font-size: 0.73rem;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .metric-value {
+    margin: 19px 0 5px;
+    color: var(--color-text-primary);
+    font-size: clamp(1.25rem, 2.3vw, 1.65rem);
+    font-weight: 600;
+    letter-spacing: -0.04em;
+    line-height: 1.1;
+  }
+
+  .metric-value.income-value {
+    color: var(--color-success);
+  }
+
+  .metric-value.expense-value {
+    color: var(--color-danger);
+  }
+
+  .metric-note {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: 0.62rem;
+    line-height: 1.45;
+  }
+
+  .dashboard-load-state {
+    display: flex;
+    min-height: 22px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+    color: var(--color-text-secondary);
+    font-size: 0.7rem;
+  }
+
+  .dashboard-load-state.error {
+    color: var(--color-danger);
+  }
+
+  #dashboard-retry {
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid rgba(91, 140, 255, 0.3);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+  }
+
+  #dashboard-retry:hover {
+    background: rgba(91, 140, 255, 0.2);
+  }
+
+  #dashboard-retry:active {
+    background: rgba(91, 140, 255, 0.26);
+  }
+
+  .content-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(340px, 1fr);
+    gap: 15px;
+  }
+
+  .panel {
+    min-width: 0;
+    padding: 20px;
+  }
+
+  .panel-heading {
+    align-items: flex-start;
+  }
+
+  .period-label {
+    flex: 0 0 auto;
+    padding: 5px 8px;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    border-radius: 7px;
+    color: #77869a;
+    font-size: 0.72rem;
+  }
+
+  .empty-icon {
+    display: grid;
+    width: 39px;
+    height: 39px;
+    place-items: center;
+    border: 1px solid rgba(91, 140, 255, 0.2);
+    border-radius: var(--radius-md);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+  }
+
+  .cashflow-content {
+    display: grid;
+    gap: 22px;
+    margin-top: 27px;
+  }
+
+  .cashflow-item {
+    display: grid;
+    gap: 9px;
+  }
+
+  .cashflow-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: #9caabe;
+    font-size: 0.75rem;
+  }
+
+  .cashflow-label strong {
+    color: #e5eaf2;
+    font-size: 0.82rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cashflow-track {
+    height: 10px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.1);
+  }
+
+  .cashflow-bar {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    transition: width 350ms ease;
+  }
+
+  .income-bar {
+    background: linear-gradient(90deg, #20b982, #5ce0ad);
+  }
+
+  .expense-bar {
+    background: linear-gradient(90deg, #e45f72, #ff9aa5);
+  }
+
+  .cashflow-note {
+    margin: 0;
+    color: #647287;
+    font-size: 0.64rem;
+  }
+
+  .budget-panel {
+    margin-bottom: 15px;
+    padding: clamp(20px, 3vw, 28px);
+  }
+
+  .budget-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+  }
+
+  .budget-heading .section-kicker {
+    margin: 0 0 7px;
+    color: var(--color-accent-hover);
+    font-size: 0.61rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+
+  .budget-heading h2 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 1.12rem;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+  }
+
+  .budget-heading p:last-child {
+    margin: 6px 0 0;
+    color: var(--color-text-secondary);
+    font-size: 0.76rem;
+  }
+
+  .budget-view-link {
+    display: inline-flex;
+    min-height: 36px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    padding: 0 11px;
+    border: 1px solid rgba(91, 140, 255, 0.3);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+    font-size: 0.7rem;
+    font-weight: 650;
+    text-decoration: none;
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+
+  .budget-view-link:hover {
+    border-color: rgba(91, 140, 255, 0.5);
+    background: rgba(91, 140, 255, 0.2);
+  }
+
+  .budget-view-link:focus-visible,
+  .budget-retry:focus-visible {
+    outline: 3px solid var(--color-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .budget-load-status {
+    min-height: 1.3em;
+    margin: 15px 0 0;
+    color: var(--color-text-secondary);
+    font-size: 0.76rem;
+    line-height: 1.45;
+  }
+
+  .budget-load-status.error {
+    color: #fca5a5;
+  }
+
+  .budget-retry {
+    min-height: 35px;
+    margin-top: 9px;
+    padding: 0 12px;
+    border: 1px solid rgba(91, 140, 255, 0.3);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 650;
+  }
+
+  .budget-retry:hover {
+    background: rgba(91, 140, 255, 0.2);
+  }
+
+  .dashboard-budget {
+    margin-top: 17px;
+    padding: 20px;
+    border: 1px solid rgba(173, 193, 226, 0.1);
+    border-radius: 14px;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.035), transparent 60%),
+      rgba(8, 13, 24, 0.34);
+  }
+
+  .dashboard-budget[hidden] {
+    display: none;
+  }
+
+  .budget-summary-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+  }
+
+  .budget-card-kicker {
+    margin: 0 0 5px;
+    color: var(--color-text-muted);
+    font-size: 0.59rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+
+  .budget-card-title {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 0.97rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .budget-status {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 10px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    border-radius: var(--radius-pill);
+    background: rgba(148, 163, 184, 0.055);
+    color: #b3bfce;
+    font-size: 0.67rem;
+    font-weight: 650;
+    line-height: 1.25;
+  }
+
+  .budget-status::before {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    content: '';
+  }
+
+  .budget-status.under {
+    border-color: rgba(52, 211, 153, 0.22);
+    background: rgba(52, 211, 153, 0.07);
+    color: #6ee7b7;
+  }
+
+  .budget-status.near {
+    border-color: rgba(251, 191, 36, 0.22);
+    background: rgba(251, 191, 36, 0.07);
+    color: #fcd34d;
+  }
+
+  .budget-status.over,
+  .budget-status.negative-available {
+    border-color: rgba(248, 113, 113, 0.22);
+    background: rgba(248, 113, 113, 0.07);
+    color: #fca5a5;
+  }
+
+  .budget-balance {
+    margin-top: 21px;
+  }
+
+  .budget-balance-label,
+  .budget-balance-note {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: 0.76rem;
+  }
+
+  .budget-balance-value {
+    margin: 5px 0 4px;
+    color: #f3f6fb;
+    font-size: clamp(2.1rem, 5vw, 3.15rem);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.06em;
+    line-height: 1.08;
+    overflow-wrap: anywhere;
+  }
+
+  .budget-balance.is-negative .budget-balance-value {
+    color: #fca5a5;
+  }
+
+  .budget-balance-note {
+    color: var(--color-text-muted);
+    font-size: 0.69rem;
+  }
+
+  .budget-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+    margin: 20px 0 0;
+    padding: 15px 0;
+    border-top: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .budget-metric {
+    display: grid;
+    min-width: 0;
+    align-content: start;
+    gap: 7px;
+    padding: 0 14px;
+    border-left: 1px solid var(--color-border);
+  }
+
+  .budget-metric:first-child {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .budget-metric:last-child {
+    padding-right: 0;
+  }
+
+  .budget-metric-label {
+    color: var(--color-text-muted);
+    font-size: 0.66rem;
+    line-height: 1.35;
+  }
+
+  .budget-metric-value {
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: #e8edf5;
+    font-size: clamp(0.86rem, 1.3vw, 1.03rem);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.025em;
+  }
+
+  .budget-progress-section {
+    display: grid;
+    gap: 9px;
+    margin-top: 17px;
+  }
+
+  .budget-progress-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .budget-progress-caption {
+    color: var(--color-text-secondary);
+    font-size: 0.72rem;
+    font-weight: 550;
+  }
+
+  .budget-progress-value {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 0.73rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .budget-progress {
+    display: block;
+    width: 100%;
+    height: 7px;
+    overflow: hidden;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: rgba(148, 163, 184, 0.11);
+    appearance: none;
+  }
+
+  .budget-progress::-webkit-progress-bar {
+    border-radius: var(--radius-pill);
+    background: rgba(148, 163, 184, 0.11);
+  }
+
+  .budget-progress::-webkit-progress-value {
+    border-radius: var(--radius-pill);
+    background: linear-gradient(90deg, #26b985, #4bd4a2);
+    transition: width 220ms ease;
+  }
+
+  .budget-progress.near::-webkit-progress-value {
+    background: linear-gradient(90deg, #d79c2d, #f4c65c);
+  }
+
+  .budget-progress.over::-webkit-progress-value {
+    background: linear-gradient(90deg, #d9586a, #f0808d);
+  }
+
+  .budget-progress::-moz-progress-bar {
+    border-radius: var(--radius-pill);
+    background: #34d399;
+  }
+
+  .budget-progress.near::-moz-progress-bar {
+    background: #fbbf24;
+  }
+
+  .budget-progress.over::-moz-progress-bar {
+    background: #f87171;
+  }
+
+  .budget-progress-note {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: 0.67rem;
+    line-height: 1.4;
+  }
+
+  .rollover-explanation {
+    margin: 15px 2px 0;
+    color: var(--color-text-muted);
+    font-size: 0.69rem;
+    line-height: 1.55;
+  }
+
+  .rollover-explanation strong {
+    color: #c8d2e0;
+    font-weight: 600;
+  }
+
+  .cashflow-empty {
+    display: grid;
+    min-height: 185px;
+    align-content: center;
+    justify-items: center;
+    padding: 18px;
+    text-align: center;
+  }
+
+  .cashflow-empty .empty-icon {
+    margin-bottom: 12px;
+    border-color: rgba(148, 163, 184, 0.13);
+    background: rgba(148, 163, 184, 0.06);
+    color: #8b9aaf;
+  }
+
+  .cashflow-empty h3 {
+    margin: 0;
+    color: #dce3ed;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
+  .cashflow-empty p {
+    margin: 6px 0 0;
+    color: #78869a;
+    font-size: 0.7rem;
+  }
+
+  .recent-status {
+    min-height: 190px;
+    align-content: center;
+    margin: 0;
+    color: #8795a9;
+    font-size: 0.72rem;
+    text-align: center;
+  }
+
+  .transaction-empty {
+    display: grid;
+    min-height: 195px;
+    align-content: center;
+    justify-items: center;
+    padding: 20px 12px 15px;
+    text-align: center;
+  }
+
+  .empty-icon {
+    width: 42px;
+    height: 42px;
+    margin-bottom: 14px;
+    border-color: rgba(148, 163, 184, 0.13);
+    background: rgba(148, 163, 184, 0.06);
+    color: #8b9aaf;
+  }
+
+  .dashboard-main h3 {
+    margin: 0;
+    color: #dce3ed;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
+  .transaction-empty p {
+    max-width: 255px;
+    margin: 6px 0 0;
+    color: #78869a;
+    font-size: 0.7rem;
+    line-height: 1.55;
+  }
+
+  .recent-list {
+    display: grid;
+    gap: 0;
+    margin: 9px 0 18px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .recent-list :global(.recent-row) {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: minmax(76px, auto) minmax(90px, 1fr) max-content;
+    align-items: center;
+    column-gap: clamp(18px, 2.4vw, 30px);
+    padding: 14px 6px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+  }
+
+  .recent-list :global(.recent-row:last-child) {
+    border-bottom: 0;
+  }
+
+  .recent-list :global(.recent-type) {
+    justify-self: start;
+    padding: 5px 8px;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.045);
+    color: #a9b5c4;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  .recent-list :global(.recent-type.income) {
+    border-color: rgba(52, 211, 153, 0.17);
+    background: rgba(52, 211, 153, 0.07);
+    color: var(--color-success);
+  }
+
+  .recent-list :global(.recent-type.expense) {
+    border-color: rgba(251, 140, 154, 0.14);
+    background: rgba(251, 140, 154, 0.055);
+    color: var(--color-danger);
+  }
+
+  .recent-list :global(.recent-type.upcoming) {
+    border-color: rgba(125, 167, 255, 0.2);
+    background: rgba(125, 167, 255, 0.07);
+    color: var(--color-accent);
+    font-size: 0.68rem;
+  }
+
+  .recent-list :global(.recent-date) {
+    justify-self: center;
+    color: #8d9aae;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .recent-list :global(.recent-amount) {
+    justify-self: end;
+    padding-left: 4px;
+    color: #dfe6ef;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .recent-list :global(.recent-amount.income) {
+    color: var(--color-success);
+  }
+
+  .recent-list :global(.recent-amount.expense) {
+    color: var(--color-danger);
+  }
+
+  .add-button {
+    display: inline-flex;
+    width: 100%;
+    min-height: 42px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid rgba(91, 140, 255, 0.22);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+    font: inherit;
+    font-size: 0.73rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: background-color 150ms ease, border-color 150ms ease, transform 150ms ease;
+  }
+
+  .add-button:hover {
+    transform: translateY(-1px);
+    border-color: rgba(91, 140, 255, 0.42);
+    background: rgba(91, 140, 255, 0.2);
+    color: #b3c9ff;
+  }
+
+  .add-button span {
+    font-size: 1.05rem;
+    line-height: 1;
+  }
+
+  .dashboard-footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 15px;
+    margin-top: 23px;
+    padding: 15px 2px 0;
+    border-top: 1px solid rgba(148, 163, 184, 0.09);
+    color: #657287;
+    font-size: 0.64rem;
+  }
+
+  .dashboard-footer span:first-child {
+    color: #8390a2;
+  }
+
+  @media (max-width: 1120px) {
+    .summary-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .content-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (max-width: 720px) {
+    .topbar {
+      align-items: flex-start;
+      margin-bottom: 30px;
+    }
+
+  }
+
+  @media (max-width: 480px) {
+    .topbar {
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .section-heading {
+      align-items: flex-start;
+    }
+
+    .section-heading p {
+      max-width: 220px;
+    }
+
+    .budget-heading {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 13px;
+    }
+
+    .budget-panel {
+      padding: 18px 15px;
+    }
+
+    .budget-view-link {
+      min-height: 42px;
+    }
+
+    .dashboard-budget {
+      padding: 16px 14px;
+    }
+
+    .budget-summary-heading {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .budget-balance {
+      margin-top: 17px;
+    }
+
+    .budget-metrics {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 15px 0;
+      padding: 15px 0;
+    }
+
+    .budget-metric {
+      padding: 0 10px;
+    }
+
+    .budget-metric:nth-child(odd) {
+      padding-left: 0;
+      border-left: 0;
+    }
+
+    .budget-metric:nth-child(even) {
+      padding-right: 0;
+    }
+
+    .budget-metric-value {
+      font-size: 0.92rem;
+    }
+
+    .summary-link {
+      flex: 0 0 auto;
+      padding: 0 8px;
+      font-size: 0.62rem;
+    }
+
+    .summary-grid {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 9px;
+    }
+
+    .summary-card {
+      padding: 14px 12px;
+    }
+
+    .metric-heading {
+      gap: 7px;
+    }
+
+    .metric-icon {
+      width: 27px;
+      height: 27px;
+    }
+
+    .metric-label {
+      font-size: 0.66rem;
+    }
+
+    .metric-value {
+      margin-top: 16px;
+    }
+
+    .metric-note {
+      font-size: 0.58rem;
+    }
+
+    .panel {
+      padding: 16px;
+    }
+
+    .recent-list :global(.recent-row) {
+      grid-template-columns: minmax(70px, auto) minmax(75px, 1fr) max-content;
+      column-gap: 12px;
+      padding-right: 4px;
+      padding-left: 4px;
+    }
+
+    .recent-list :global(.recent-amount) {
+      font-size: 0.74rem;
+    }
+
+    .recent-list :global(.recent-date) {
+      font-size: 0.68rem;
+    }
+
+    .recent-list :global(.recent-type) {
+      font-size: 0.67rem;
+    }
+
+    .dashboard-footer {
+      flex-direction: column;
+      gap: 5px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .summary-link,
+    .panel-link,
+    .cashflow-bar,
+    .add-button {
+      transition: none;
+    }
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .summary-card,
+    .panel {
+      background: #151d2b;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .budget-view-link,
+    .budget-progress::-webkit-progress-value {
+      transition: none;
+    }
+  }
+</style>

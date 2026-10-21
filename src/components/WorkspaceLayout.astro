@@ -1,0 +1,87 @@
+---
+import WorkspaceSidebar from '@/components/WorkspaceSidebar.astro';
+import WorkspaceAccount from '@/components/WorkspaceAccount.astro';
+
+interface Props {
+  activePage: 'overview' | 'transactions' | 'budgets';
+}
+
+const { activePage } = Astro.props;
+---
+
+<div class="workspace-layout">
+  <WorkspaceSidebar activePage={activePage} />
+  <div class="workspace-main">
+    <WorkspaceAccount />
+    <slot />
+  </div>
+</div>
+
+<style>
+  :global(html.workspace-page) {
+    scrollbar-gutter: stable;
+  }
+
+  :global(body.auth-page.workspace-page) {
+    display: block;
+    min-height: 100vh;
+    padding: 0;
+    background:
+      radial-gradient(ellipse at 78% 8%, var(--ambient-blue), transparent 42rem),
+      radial-gradient(ellipse at 4% 76%, var(--ambient-violet), transparent 36rem),
+      linear-gradient(145deg, #090d16, #0a101a 55%, #090d15),
+      var(--color-page);
+  }
+
+  .workspace-layout {
+    position: relative;
+    isolation: isolate;
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    min-height: 100vh;
+    grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr);
+  }
+
+  .workspace-layout::before {
+    position: fixed;
+    z-index: -1;
+    top: -24rem;
+    right: -12rem;
+    width: 52rem;
+    height: 52rem;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--ambient-blue), transparent 68%);
+    content: '';
+    pointer-events: none;
+  }
+
+  .workspace-main {
+    min-width: 0;
+  }
+
+  :global(main.workspace-content) {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    max-width: var(--workspace-content-max-width);
+    margin: 0 auto;
+    padding: 0 var(--workspace-content-gutter) 24px;
+  }
+
+  @media (max-width: 720px) {
+    .workspace-layout {
+      display: block;
+    }
+
+    :global(main.workspace-content) {
+      padding: 0 var(--workspace-content-gutter) 22px;
+    }
+  }
+
+  @media (max-width: 480px) {
+    :global(main.workspace-content) {
+      padding: 0 var(--workspace-content-gutter) 18px;
+    }
+  }
+</style>
