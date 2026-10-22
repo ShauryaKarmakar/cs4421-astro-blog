@@ -1,3 +1,4 @@
+
 {
   "name": "my-astro-blog",
   "type": "module",
@@ -16,9 +17,12 @@
   },
   "dependencies": {
     "@astrojs/mdx": "^8.1.0",
+    "@astrojs/node": "^11.1.7",
     "@astrojs/rss": "^4.0.19",
     "@astrojs/sitemap": "^3.7.4",
     "astro": "^7.4.0",
+    "bcryptjs": "^3.0.3",
+    "pg": "^8.23.1",
     "sharp": "^0.35.5"
   },
   "allowScripts": {
@@ -26,11 +30,11 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
+    "@types/pg": "^8.23.1",
     "eslint": "^10.13.0",
     "eslint-plugin-astro": "^3.2.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.2",
     "vitest": "^5.0.5"
-
   }
 }

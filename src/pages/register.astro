@@ -1,0 +1,93 @@
+---
+import BaseHead from '@/components/BaseHead.astro';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <BaseHead title="Create your account - UniBudget" description="Create your UniBudget account." />
+  </head>
+  <body class="auth-page">
+    <main class="auth-shell">
+      <a class="brand" href="/" aria-label="UniBudget home">
+        <span class="brand-mark" aria-hidden="true">u</span>
+        <span>UniBudget</span>
+      </a>
+
+      <section class="auth-card" aria-labelledby="auth-title">
+        <div class="auth-intro">
+          <p class="auth-eyebrow">A clearer view of your money</p>
+          <h1 id="auth-title">Make room for what matters.</h1>
+          <p class="auth-subtitle">Create your account to get started with UniBudget.</p>
+        </div>
+
+        <form id="registerForm" class="auth-form">
+          <div class="form-group">
+            <label for="email">Email address</label>
+            <input
+              type="email"
+              id="email"
+              name="email"
+              autocomplete="email"
+              placeholder="you@example.com"
+              aria-describedby="auth-error"
+              required
+            />
+          </div>
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input
+              type="password"
+              id="password"
+              name="password"
+              autocomplete="new-password"
+              placeholder="At least 8 characters"
+              aria-describedby="auth-error"
+              required
+            />
+          </div>
+          <button class="auth-submit" type="submit">Create account</button>
+          <p id="auth-error" class="auth-error" role="alert" aria-live="polite"></p>
+        </form>
+
+        <p class="auth-switch">
+          Already have an account? <a href="/login">Sign in</a>
+        </p>
+        <p class="auth-footnote">Your personal finances, thoughtfully organized.</p>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById('registerForm') as HTMLFormElement;
+      const errorDiv = document.getElementById('auth-error') as HTMLParagraphElement;
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorDiv.textContent = '';
+
+        const formData = new FormData(form);
+        const email = formData.get('email') as string;
+        const password = formData.get('password') as string;
+
+        try {
+          const response = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ email, password }),
+          });
+
+          if (response.ok) {
+            window.location.href = '/dashboard';
+          } else {
+            const errorData = await response.json();
+            errorDiv.textContent = errorData.error || 'Registration failed';
+          }
+        } catch {
+          errorDiv.textContent = 'An error occurred';
+        }
+      });
+    </script>
+  </body>
+</html>

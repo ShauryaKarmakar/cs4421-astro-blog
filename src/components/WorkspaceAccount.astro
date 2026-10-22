@@ -1,0 +1,267 @@
+﻿<div class="workspace-account-bar">
+  <div class="workspace-account" role="group" aria-label="Signed-in account">
+    <span class="account-avatar" aria-hidden="true">U</span>
+    <div class="account-copy">
+      <span class="account-label">Signed in as</span>
+      <span
+        id="workspace-account-email"
+        class="account-email"
+        title="Loading account details"
+        aria-label="Loading account details"
+      >Loading account…</span>
+    </div>
+    <form id="workspace-signout-form" action="/api/auth/logout" method="POST">
+      <button class="signout-button" type="submit" aria-label="Sign out of UniBudget">Sign out</button>
+    </form>
+  </div>
+  <p id="workspace-account-status" class="account-status" role="status" aria-live="polite" hidden></p>
+</div>
+
+<script>
+  interface UserResponse {
+    user?: {
+      email?: unknown;
+    };
+  }
+
+  const emailElement = document.querySelector<HTMLSpanElement>('#workspace-account-email');
+  const avatarElement = document.querySelector<HTMLElement>('.workspace-account .account-avatar');
+  const statusElement = document.querySelector<HTMLParagraphElement>('#workspace-account-status');
+  const signoutForm = document.querySelector<HTMLFormElement>('#workspace-signout-form');
+  const signoutButton = signoutForm?.querySelector<HTMLButtonElement>('button[type="submit"]');
+
+  function showStatus(message: string): void {
+    if (!statusElement) return;
+    statusElement.textContent = message;
+    statusElement.hidden = false;
+  }
+
+  async function loadAccount(): Promise<void> {
+    if (!emailElement) return;
+
+    try {
+      const response = await fetch('/api/auth/me', {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      });
+
+      if (response.status === 401) {
+        window.location.assign('/login');
+        return;
+      }
+      if (!response.ok) throw new Error('Account request failed');
+
+      const body = (await response.json()) as UserResponse;
+      const email = body.user?.email;
+      if (typeof email !== 'string' || email.length === 0) {
+        throw new Error('Account email is unavailable');
+      }
+
+      emailElement.textContent = email;
+      emailElement.title = email;
+      emailElement.setAttribute('aria-label', `Signed in as ${email}`);
+      if (avatarElement) avatarElement.textContent = email.slice(0, 1).toUpperCase();
+    } catch {
+      emailElement.textContent = 'Account unavailable';
+      emailElement.title = 'Unable to load account details';
+      emailElement.setAttribute('aria-label', 'Account details unavailable');
+      showStatus('Unable to load account details. Refresh the page to try again.');
+    }
+  }
+
+  signoutForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!signoutButton) return;
+
+    signoutButton.disabled = true;
+    showStatus('Signing out…');
+
+    try {
+      const response = await fetch(signoutForm.action, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      });
+      const body = (await response.json()) as { success?: unknown };
+
+      if (!response.ok || body.success !== true) {
+        throw new Error('Sign-out request failed');
+      }
+
+      window.location.assign('/login');
+    } catch {
+      signoutButton.disabled = false;
+      showStatus('Unable to sign out. Please try again.');
+    }
+  });
+
+  void loadAccount();
+</script>
+
+<style>
+  .workspace-account-bar {
+    box-sizing: border-box;
+    display: flex;
+    flex-wrap: wrap;
+    width: 100%;
+    max-width: var(--workspace-content-max-width);
+    min-height: 50px;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    margin: 0 auto;
+    padding: 10px var(--workspace-content-gutter) 0;
+  }
+
+  .workspace-account {
+    box-sizing: border-box;
+    display: flex;
+    max-width: 100%;
+    min-width: 0;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 6px 8px;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    background:
+      linear-gradient(145deg, var(--glass-highlight), transparent 64%),
+      var(--glass-surface-strong);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16), inset 0 1px rgba(255, 255, 255, 0.035);
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    backdrop-filter: blur(var(--glass-blur));
+  }
+
+  .account-avatar {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid rgba(91, 140, 255, 0.28);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+    font-size: 0.82rem;
+    font-weight: 700;
+  }
+
+  .account-copy {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .account-label {
+    color: var(--color-text-muted);
+    font-size: 0.62rem;
+    line-height: 1.2;
+  }
+
+  .account-email {
+    overflow: hidden;
+    max-width: min(320px, 32vw);
+    color: var(--color-text-primary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .workspace-account form {
+    flex: 0 0 auto;
+  }
+
+  .signout-button {
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.7rem;
+    font-weight: 600;
+    transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+  }
+
+  .signout-button:hover:not(:disabled) {
+    border-color: rgba(143, 177, 255, 0.4);
+    background: var(--color-accent-soft);
+    color: var(--color-accent-hover);
+  }
+
+  .signout-button:active:not(:disabled) {
+    background: rgba(91, 140, 255, 0.18);
+  }
+
+  .signout-button:focus-visible {
+    outline: 3px solid var(--color-focus-ring);
+    outline-offset: 3px;
+  }
+
+  .signout-button:disabled {
+    cursor: wait;
+    opacity: 0.65;
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .workspace-account {
+      background: #151d2b;
+    }
+  }
+
+  .account-status {
+    max-width: min(360px, 45vw);
+    margin: 0;
+    color: var(--color-danger);
+    font-size: 0.68rem;
+    text-align: right;
+  }
+
+  @media (max-width: 720px) {
+    .workspace-account-bar {
+      min-height: 46px;
+      padding: 8px var(--workspace-content-gutter) 0;
+    }
+
+    .account-email {
+      max-width: min(240px, 42vw);
+    }
+  }
+
+  @media (max-width: 480px) {
+    .workspace-account-bar {
+      padding-right: var(--workspace-content-gutter);
+      padding-left: var(--workspace-content-gutter);
+    }
+
+    .workspace-account {
+      gap: 7px;
+      padding: 5px;
+    }
+
+    .account-avatar {
+      width: 29px;
+      height: 29px;
+    }
+
+    .account-email {
+      max-width: min(190px, 40vw);
+      font-size: 0.7rem;
+    }
+
+    .signout-button {
+      min-height: 30px;
+      padding: 0 8px;
+      font-size: 0.66rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .signout-button {
+      transition: none;
+    }
+  }
+</style>

@@ -2,10 +2,12 @@
 dist
 .git
 .github
+.vscode
 .astro
 cdk.out
-hello-cdk/node_modules
+hello-cdk
+tests
+coverage
+docs
 npm-debug.log*
-.env
-.env.*
-!.env.example
+.env*

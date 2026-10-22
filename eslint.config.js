@@ -5,7 +5,7 @@ export default [
     ...tseslint.configs.recommended,
     ...eslintPluginAstro.configs["flat/recommended"],
     {
-        ignores: [".astro/**", "**/cdk.out/**","node_modules/**"],
+        ignores: [".astro/**", "**/cdk.out/**", "dist/**", "node_modules/**"],
     },
     {
         rules: {

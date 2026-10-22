@@ -1,19 +1,28 @@
 #!/usr/bin/env node
-import * as cdk from 'aws-cdk-lib/core';
-import { StaticSiteStack } from '../lib/cdk-stack';
+import * as cdk from 'aws-cdk-lib';
+import { UniBudgetStack } from '../lib/cdk-stack';
 
 const app = new cdk.App();
-new StaticSiteStack(app, 'StaticSiteStack', {
-  /* If you don't specify 'env', this stack will be environment-agnostic.
-   * Account/Region-dependent features and context lookups will not work,
-   * but a single synthesized template can be deployed anywhere. */
+const account = process.env.UNIBUDGET_AWS_ACCOUNT;
+const region = process.env.UNIBUDGET_AWS_REGION;
+if (Boolean(account) !== Boolean(region)) {
+  throw new Error(
+    'Set both UNIBUDGET_AWS_ACCOUNT and UNIBUDGET_AWS_REGION for deployment.',
+  );
+}
 
-  /* Uncomment the next line to specialize this stack for the AWS Account
-   * and Region that are implied by the current CLI configuration. */
-  // env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+const desiredCountContext = app.node.tryGetContext('desiredCount');
+const imageTagContext = app.node.tryGetContext('imageTag');
+const certificateArnContext = app.node.tryGetContext('certificateArn');
 
- 
-   env: { account: '556890483680', region: 'us-east-1' },
-  
-  /* For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html */
+new UniBudgetStack(app, 'UniBudgetStack', {
+  env: account && region ? { account, region } : undefined,
+  desiredCount:
+    desiredCountContext === undefined ? 0 : Number(desiredCountContext),
+  imageTag:
+    imageTagContext === undefined ? 'bootstrap' : String(imageTagContext),
+  certificateArn:
+    certificateArnContext === undefined
+      ? undefined
+      : String(certificateArnContext),
 });
