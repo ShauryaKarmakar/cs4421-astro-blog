@@ -30,8 +30,71 @@ const hasPostgresEnvironment = Boolean(
   process.env.PGDATABASE,
 );
 
-if (!connectionString && !hasPostgresEnvironment) {
-  throw new Error('Set DATABASE_URL or complete PostgreSQL environment variables.');
+/**
+ * Raised when the database configuration is absent or invalid. It is thrown
+ * when a query runs, not while this module is imported: a throwing import
+ * turns every route, including /api/health, into an opaque 500 and hides the
+ * outage the health probe exists to report.
+ */
+export class DatabaseConfigurationError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'DatabaseConfigurationError';
+  }
+}
+
+/**
+ * Converts any configuration failure into the typed error, so an invalid TLS
+ * mode or a missing CA certificate is reported the same way as absent
+ * configuration instead of escaping during module evaluation.
+ */
+function toConfigurationError(error: unknown): DatabaseConfigurationError {
+  if (error instanceof DatabaseConfigurationError) {
+    return error;
+  }
+  return new DatabaseConfigurationError(
+    error instanceof Error
+      ? error.message
+      : 'The database configuration is invalid.',
+    { cause: error },
+  );
+}
+
+const configurationError =
+  connectionString || hasPostgresEnvironment
+    ? null
+    : new DatabaseConfigurationError(
+        'Set DATABASE_URL or complete PostgreSQL environment variables.',
+      );
+
+/**
+ * The fail-closed contract: every database call rejects with the captured
+ * configuration error. It is declared explicitly so the stand-in cannot drift
+ * from what callers are promised, without pretending to be a full `pg.Pool`.
+ */
+type FailClosedPool = {
+  query: () => Promise<never>;
+  connect: () => Promise<never>;
+  on: (event: string, listener: (error: Error) => void) => FailClosedPool;
+};
+
+/**
+ * Stands in for a connection pool when configuration is absent or invalid.
+ * Queries and client checkout fail closed with the configuration error; no
+ * connection is attempted or retried, and TLS is never downgraded to reach the
+ * database.
+ */
+function unconfiguredPool(error: DatabaseConfigurationError): Pool {
+  const unavailable: FailClosedPool = {
+    query: () => Promise.reject(error),
+    connect: () => Promise.reject(error),
+    on: () => unavailable,
+  };
+
+  // The literal above is type-checked against every method callers use; this
+  // boundary cast only reconciles the partial stand-in with the `Pool` type
+  // the application imports, which it deliberately does not fully implement.
+  return unavailable as unknown as Pool;
 }
 
 export const applicationDatabaseRole = 'unibudget_app';
@@ -55,13 +118,29 @@ const healthPoolOptions: PoolConfig = {
   application_name: 'unibudget-health',
 };
 
-export const pool = new Pool(
-  createPostgresPoolConfig(connectionString, process.env, applicationPoolOptions),
-);
+/**
+ * Builds a connection pool, turning configuration failures into a pool that
+ * rejects every query. Configuration problems surface when a query runs, never
+ * while this module is imported, so an invalid TLS mode or CA path cannot take
+ * down the health endpoint that reports it.
+ */
+function createPool(options: PoolConfig): Pool {
+  if (configurationError) {
+    return unconfiguredPool(configurationError);
+  }
 
-export const healthPool = new Pool(
-  createPostgresPoolConfig(connectionString, process.env, healthPoolOptions),
-);
+  try {
+    return new Pool(
+      createPostgresPoolConfig(connectionString, process.env, options),
+    );
+  } catch (error) {
+    return unconfiguredPool(toConfigurationError(error));
+  }
+}
+
+export const pool = createPool(applicationPoolOptions);
+
+export const healthPool = createPool(healthPoolOptions);
 
 // Idle clients can emit errors (for example when Supavisor closes a connection).
 // Without a listener Node treats that as an unhandled error and terminates the

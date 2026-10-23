@@ -534,15 +534,23 @@ S3/CloudFront site.
 
    Save the RDS physical ID. Require the same ID after the upgrade.
 
-2. Confirm the CDK app contains only the intended stack:
+2. Confirm the CDK app contains only the intended stack. The app refuses to
+   build without an image tag and a Supabase pooler hostname, so pass the
+   placeholder values below; both only have to be syntactically valid for a
+   listing, and neither is used to contact anything:
 
    ```bash
    cd hello-cdk
-   npx cdk ls
+   npx cdk ls \
+     -c imageTag="example-image-tag" \
+     -c supabaseHost="aws-0-example-1.pooler.supabase.com"
    ```
 
-   Expect only `UniBudgetStack`. If an S3/CloudFront stack appears, stop: this
-   deployment must not include or alter the separate static site.
+   `supabaseHost` is the Supabase session-pooler hostname copied from the
+   project's Database Settings: a bare DNS name with no scheme, port, path, or
+   credentials. Expect only `UniBudgetStack`. If an S3/CloudFront stack
+   appears, stop: this deployment must not include or alter the separate static
+   site.
 
 3. Synthesize and review the proposed change before deploying. Use the image
    tag the next workflow will build and the URL, certificate, and pooler host

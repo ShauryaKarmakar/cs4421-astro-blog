@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { healthPool } from '../../lib/db';
+import { assertApplicationRole, healthPool } from '../../lib/db';
 import { logServerError } from '../../lib/serverLogger';
 
 const healthHeaders = {
@@ -8,6 +8,10 @@ const healthHeaders = {
 };
 
 async function checkDatabase(): Promise<void> {
+  // The middleware lets this endpoint through so it can report dependency
+  // health itself, so the production role assertion has to run here too and
+  // fails closed with the same 503 as a failed query.
+  await assertApplicationRole();
   // healthPool sets a two-second server-side statement_timeout and a 2.5s
   // client read timeout, so the query is cancelled rather than merely raced.
   await healthPool.query('SELECT 1');

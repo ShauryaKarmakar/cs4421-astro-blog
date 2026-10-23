@@ -5,6 +5,15 @@ import { logServerError } from '../lib/serverLogger';
 import { getSessionCookie, validateSession } from '../lib/session';
 
 export const onRequest = defineMiddleware(async (context, next) => {
+  const pathname = new URL(context.request.url).pathname;
+
+  // The health endpoint reports dependency health itself, so it must reach its
+  // handler even when the database is unreachable. The role gate below would
+  // otherwise replace the health payload with a generic 503.
+  if (pathname === '/api/health') {
+    return next();
+  }
+
   try {
     await assertApplicationRole();
   } catch (error) {
@@ -17,8 +26,6 @@ export const onRequest = defineMiddleware(async (context, next) => {
       },
     });
   }
-
-  const pathname = new URL(context.request.url).pathname;
 
   // Define the protected paths
   const protectedPaths = ['/dashboard', '/transactions', '/budgets'];
