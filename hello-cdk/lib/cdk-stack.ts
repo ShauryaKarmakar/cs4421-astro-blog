@@ -9,10 +9,43 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { Construct } from 'constructs';
 
+function createEmptySecret(
+  scope: Construct,
+  id: string,
+  secretName: string,
+  description: string,
+): secretsmanager.Secret {
+  const secret = new secretsmanager.Secret(scope, id, {
+    secretName,
+    description,
+    removalPolicy: cdk.RemovalPolicy.RETAIN,
+  });
+  // The L2 construct defaults to generating a placeholder value. Remove it so
+  // CloudFormation creates an empty secret that is populated out of band; no
+  // placeholder credentials are created.
+  const cfnSecret = secret.node.defaultChild as secretsmanager.CfnSecret;
+  cfnSecret.generateSecretString = undefined;
+  return secret;
+}
+
 export interface UniBudgetStackProps extends cdk.StackProps {
   certificateArn?: string;
   desiredCount?: number;
   imageTag?: string;
+  applicationUrl?: string;
+  supabaseHost?: string;
+  supabasePort?: string;
+  supabaseDatabase?: string;
+}
+
+function isValidDnsHostname(value: string): boolean {
+  if (value.length > 253 || value.endsWith('.')) {
+    return false;
+  }
+  const labels = value.split('.');
+  return labels.every((label) =>
+    /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(label),
+  );
 }
 
 export class UniBudgetStack extends cdk.Stack {
@@ -20,12 +53,86 @@ export class UniBudgetStack extends cdk.Stack {
     super(scope, id, props);
 
     const desiredCount = props.desiredCount ?? 0;
-    const imageTag = props.imageTag ?? 'bootstrap';
+    const imageTag = props.imageTag?.trim();
     if (!Number.isInteger(desiredCount) || desiredCount < 0) {
       throw new Error('desiredCount must be a non-negative integer.');
     }
+    if (!imageTag) {
+      throw new Error(
+        'imageTag is required; both task definitions must reference an image tag that will be pushed.',
+      );
+    }
     if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(imageTag)) {
       throw new Error('imageTag must be a valid container image tag.');
+    }
+    // Never default the pooler hostname. Supabase has regional and
+    // project-specific pooler hosts, and a stale default silently connects to
+    // the wrong tenant (or not at all). Require the exact host copied from the
+    // project's Database Settings.
+    const supabaseHost = props.supabaseHost?.trim();
+    const supabasePort = props.supabasePort ?? '5432';
+    const supabaseDatabase = props.supabaseDatabase?.trim() ?? 'postgres';
+    if (!supabaseHost) {
+      throw new Error(
+        'supabaseHost is required. Copy the session-pooler host from the Supabase dashboard Database Settings.',
+      );
+    }
+    if (!isValidDnsHostname(supabaseHost)) {
+      throw new Error(
+        'supabaseHost must be a bare DNS hostname copied from the Supabase dashboard (no scheme, port, or path).',
+      );
+    }
+    if (!supabaseDatabase) {
+      throw new Error('supabaseDatabase must be set for the Supabase connection.');
+    }
+    if (!/^[0-9]{1,5}$/.test(supabasePort) || Number(supabasePort) < 1 || Number(supabasePort) > 65535) {
+      throw new Error('supabasePort must be a numeric PostgreSQL port between 1 and 65535.');
+    }
+
+    const certificateArn = props.certificateArn?.trim();
+    if (
+      certificateArn &&
+      !/^arn:aws[a-zA-Z-]*:acm:[a-z0-9-]+:[0-9]{12}:certificate\/[0-9a-f-]+$/.test(
+        certificateArn,
+      )
+    ) {
+      throw new Error('certificateArn must be an ACM certificate ARN.');
+    }
+
+    const applicationUrl = props.applicationUrl?.trim();
+    if (applicationUrl) {
+      let parsed: URL;
+      try {
+        parsed = new URL(applicationUrl);
+      } catch {
+        throw new Error('applicationUrl must be a valid HTTPS URL.');
+      }
+      if (parsed.protocol !== 'https:') {
+        throw new Error('applicationUrl must use HTTPS when an ACM certificate is configured.');
+      }
+      if (
+        parsed.pathname !== '/' ||
+        parsed.search ||
+        parsed.hash ||
+        parsed.port ||
+        parsed.username ||
+        parsed.password
+      ) {
+        throw new Error('applicationUrl must be an origin such as https://budget.example.com.');
+      }
+      if (!certificateArn) {
+        throw new Error('applicationUrl requires certificateArn; HTTPS is not exposed without a certificate.');
+      }
+    }
+    if (certificateArn && !applicationUrl) {
+      throw new Error(
+        'applicationUrl is required with certificateArn: the ACM certificate covers your domain, not the ALB-generated hostname.',
+      );
+    }
+    if (desiredCount > 0 && !certificateArn) {
+      throw new Error(
+        'certificateArn is required when desiredCount is greater than zero; authenticated traffic must use HTTPS.',
+      );
     }
 
     const vpc = new ec2.Vpc(this, 'ApplicationVpc', {
@@ -103,6 +210,30 @@ export class UniBudgetStack extends cdk.Stack {
       },
     );
 
+    // Supabase credentials are populated out of band after the first
+    // deployment. The application secret holds { username, password } where the
+    // username includes the pooler project ref; the migration secret holds the
+    // postgres administrator username and password. The CA secret holds the PEM
+    // certificate downloaded from the project's Database Settings.
+    const supabaseApplicationSecret = createEmptySecret(
+      this,
+      'SupabaseApplicationCredentials',
+      'unibudget/supabase/application',
+      'JSON with the unibudget_app pooler username and password for Supabase.',
+    );
+    const supabaseMigrationSecret = createEmptySecret(
+      this,
+      'SupabaseMigrationCredentials',
+      'unibudget/supabase/migration',
+      'JSON with the Supabase postgres administrator username and password.',
+    );
+    const supabaseCaSecret = createEmptySecret(
+      this,
+      'SupabaseCaCertificate',
+      'unibudget/supabase/ca',
+      'PEM CA certificate downloaded from the Supabase project database settings.',
+    );
+
     const repository = new ecr.Repository(this, 'ApplicationRepository', {
       imageTagMutability: ecr.TagMutability.IMMUTABLE,
       imageScanOnPush: true,
@@ -149,7 +280,8 @@ export class UniBudgetStack extends cdk.Stack {
       },
     );
     repository.grantPull(applicationExecutionRole);
-    applicationDatabaseSecret.grantRead(applicationExecutionRole);
+    supabaseApplicationSecret.grantRead(applicationExecutionRole);
+    supabaseCaSecret.grantRead(applicationExecutionRole);
     logGroup.grantWrite(applicationExecutionRole);
 
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'ApplicationTask', {
@@ -163,15 +295,21 @@ export class UniBudgetStack extends cdk.Stack {
         NODE_ENV: 'production',
         HOST: '0.0.0.0',
         PORT: '8080',
-        PGHOST: database.dbInstanceEndpointAddress,
-        PGPORT: database.dbInstanceEndpointPort,
-        PGDATABASE: 'unibudget',
+        PGHOST: supabaseHost,
+        PGPORT: supabasePort,
+        PGDATABASE: supabaseDatabase,
         PGSSLMODE: 'verify-full',
-        PGSSLROOTCERT: '/etc/ssl/certs/rds-global-bundle.pem',
       },
       secrets: {
-        PGUSER: ecs.Secret.fromSecretsManager(applicationDatabaseSecret, 'username'),
-        PGPASSWORD: ecs.Secret.fromSecretsManager(applicationDatabaseSecret, 'password'),
+        PGUSER: ecs.Secret.fromSecretsManager(
+          supabaseApplicationSecret,
+          'username',
+        ),
+        PGPASSWORD: ecs.Secret.fromSecretsManager(
+          supabaseApplicationSecret,
+          'password',
+        ),
+        SUPABASE_CA_CERT: ecs.Secret.fromSecretsManager(supabaseCaSecret),
       },
       logging: ecs.LogDrivers.awsLogs({
         logGroup,
@@ -182,7 +320,7 @@ export class UniBudgetStack extends cdk.Stack {
           'CMD',
           'node',
           '-e',
-          "fetch('http://127.0.0.1:8080/login').then((response) => process.exit(response.status < 500 ? 0 : 1)).catch(() => process.exit(1))",
+          "fetch('http://127.0.0.1:8080/api/health').then((response) => process.exit(response.status === 200 ? 0 : 1)).catch(() => process.exit(1))",
         ],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
@@ -203,8 +341,9 @@ export class UniBudgetStack extends cdk.Stack {
       },
     );
     repository.grantPull(migrationExecutionRole);
-    databaseAdminSecret.grantRead(migrationExecutionRole);
-    applicationDatabaseSecret.grantRead(migrationExecutionRole);
+    supabaseMigrationSecret.grantRead(migrationExecutionRole);
+    supabaseApplicationSecret.grantRead(migrationExecutionRole);
+    supabaseCaSecret.grantRead(migrationExecutionRole);
     logGroup.grantWrite(migrationExecutionRole);
 
     const migrationTaskDefinition = new ecs.FargateTaskDefinition(
@@ -221,25 +360,25 @@ export class UniBudgetStack extends cdk.Stack {
       command: ['node', './scripts/migrate.mjs'],
       environment: {
         NODE_ENV: 'production',
-        MIGRATION_PGHOST: database.dbInstanceEndpointAddress,
-        MIGRATION_PGPORT: database.dbInstanceEndpointPort,
-        MIGRATION_PGDATABASE: 'unibudget',
-        MIGRATION_PGSSLMODE: 'verify-full',
-        MIGRATION_PGSSLROOTCERT: '/etc/ssl/certs/rds-global-bundle.pem',
+        PGHOST: supabaseHost,
+        PGPORT: supabasePort,
+        PGDATABASE: supabaseDatabase,
+        PGSSLMODE: 'verify-full',
       },
       secrets: {
-        MIGRATION_PGUSER: ecs.Secret.fromSecretsManager(
-          databaseAdminSecret,
+        PGUSER: ecs.Secret.fromSecretsManager(
+          supabaseMigrationSecret,
           'username',
         ),
-        MIGRATION_PGPASSWORD: ecs.Secret.fromSecretsManager(
-          databaseAdminSecret,
+        PGPASSWORD: ecs.Secret.fromSecretsManager(
+          supabaseMigrationSecret,
           'password',
         ),
         APP_DATABASE_PASSWORD: ecs.Secret.fromSecretsManager(
-          applicationDatabaseSecret,
+          supabaseApplicationSecret,
           'password',
         ),
+        SUPABASE_CA_CERT: ecs.Secret.fromSecretsManager(supabaseCaSecret),
       },
       logging: ecs.LogDrivers.awsLogs({
         logGroup,
@@ -260,8 +399,8 @@ export class UniBudgetStack extends cdk.Stack {
       protocol: elbv2.ApplicationProtocol.HTTP,
       targetType: elbv2.TargetType.IP,
       healthCheck: {
-        path: '/login',
-        healthyHttpCodes: '200-399',
+        path: '/api/health',
+        healthyHttpCodes: '200',
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
         healthyThresholdCount: 2,
@@ -288,7 +427,7 @@ export class UniBudgetStack extends cdk.Stack {
       'Application requests from the load balancer.',
     );
 
-    if (props.certificateArn) {
+    if (certificateArn) {
       loadBalancerSecurityGroup.addIngressRule(
         ec2.Peer.anyIpv4(),
         ec2.Port.tcp(443),
@@ -306,9 +445,7 @@ export class UniBudgetStack extends cdk.Stack {
       loadBalancer.addListener('HttpsListener', {
         port: 443,
         open: false,
-        certificates: [
-          elbv2.ListenerCertificate.fromArn(props.certificateArn),
-        ],
+        certificates: [elbv2.ListenerCertificate.fromArn(certificateArn)],
         defaultTargetGroups: [targetGroup],
       });
     } else {
@@ -324,14 +461,44 @@ export class UniBudgetStack extends cdk.Stack {
       });
     }
 
+    // The ALB DNS name is not covered by a custom-domain ACM certificate. When
+    // HTTPS is configured, the output is the explicitly supplied custom domain;
+    // point its DNS record at this load balancer before deploying traffic.
     new cdk.CfnOutput(this, 'ApplicationUrl', {
-      value: `${props.certificateArn ? 'https' : 'http'}://${loadBalancer.loadBalancerDnsName}`,
+      value: applicationUrl ?? `http://${loadBalancer.loadBalancerDnsName}`,
+    });
+    new cdk.CfnOutput(this, 'LoadBalancerDnsName', {
+      value: loadBalancer.loadBalancerDnsName,
+      description:
+        'Point the custom application domain at this ALB DNS name when using an ACM certificate.',
     });
     new cdk.CfnOutput(this, 'ImageRepositoryUri', { value: repository.repositoryUri });
     new cdk.CfnOutput(this, 'ClusterName', { value: cluster.clusterName });
+    new cdk.CfnOutput(this, 'ServiceName', { value: service.serviceName });
     new cdk.CfnOutput(this, 'TaskDefinitionArn', { value: taskDefinition.taskDefinitionArn });
+    new cdk.CfnOutput(this, 'ApplicationTaskRoleArn', {
+      value: taskDefinition.taskRole.roleArn,
+    });
+    new cdk.CfnOutput(this, 'ApplicationTaskExecutionRoleArn', {
+      value: applicationExecutionRole.roleArn,
+    });
     new cdk.CfnOutput(this, 'MigrationTaskDefinitionArn', {
       value: migrationTaskDefinition.taskDefinitionArn,
+    });
+    new cdk.CfnOutput(this, 'MigrationTaskRoleArn', {
+      value: migrationTaskDefinition.taskRole.roleArn,
+    });
+    new cdk.CfnOutput(this, 'MigrationTaskExecutionRoleArn', {
+      value: migrationExecutionRole.roleArn,
+    });
+    new cdk.CfnOutput(this, 'SupabaseApplicationSecretArn', {
+      value: supabaseApplicationSecret.secretArn,
+    });
+    new cdk.CfnOutput(this, 'SupabaseMigrationSecretArn', {
+      value: supabaseMigrationSecret.secretArn,
+    });
+    new cdk.CfnOutput(this, 'SupabaseCaSecretArn', {
+      value: supabaseCaSecret.secretArn,
     });
     new cdk.CfnOutput(this, 'ApplicationSecurityGroupId', {
       value: applicationSecurityGroup.securityGroupId,
@@ -341,6 +508,11 @@ export class UniBudgetStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'DatabaseEndpoint', {
       value: database.dbInstanceEndpointAddress,
+    });
+    new cdk.CfnOutput(this, 'RetainedApplicationDatabaseSecretArn', {
+      value: applicationDatabaseSecret.secretArn,
+      description:
+        'Retained RDS-era application secret; the Supabase tasks do not read it.',
     });
   }
 }

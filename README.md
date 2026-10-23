@@ -14,15 +14,31 @@ PostgreSQL for user, session, transaction, and budget data.
 
 ```powershell
 npm ci
-$env:DATABASE_URL = "postgresql://USER:PASSWORD@HOST:5432/DATABASE"
+$env:DATABASE_URL = "postgresql://unibudget_app.PROJECT_REF:USER_PASSWORD@HOST:5432/postgres"
+$env:MIGRATION_DATABASE_URL = "postgresql://postgres.PROJECT_REF:PASSWORD@HOST:5432/postgres"
+$env:APP_DATABASE_PASSWORD = "USER_PASSWORD"
+$env:PGSSLMODE = "verify-full"
+$env:PGSSLROOTCERT = "./certs/supabase-ca.crt"
+node scripts/migrate.mjs
 npm run dev
 ```
 
-Apply the SQL migrations in `migrations/` in their numbered order to a new local
-database. Do not apply them to a database containing existing application data
-without first reviewing its schema and backing it up. See
-[deployment and migration guidance](./docs/deployment.md) for the controlled
-migration procedure.
+The migration runner applies the numbered SQL files in `migrations/` and
+provisions the `unibudget_app` role. It connects with
+`MIGRATION_DATABASE_URL` (or the standard `PGHOST`, `PGUSER`, `PGPASSWORD`, and
+`PGDATABASE` variables), never with the application's `DATABASE_URL`, and
+requires verified TLS with a Supabase CA certificate. It records migration
+checksums, refuses incompatible or drifted schemas, and removes Supabase Data
+API role access from the UniBudget tables. Do not apply migrations to a
+database containing existing application data without first reviewing its
+schema and backing it up.
+
+If the connection settings are stored in `.env`, load it explicitly because the
+Node migration script does not read `.env` automatically:
+
+```powershell
+node --env-file=.env scripts/migrate.mjs
+```
 
 ## Quality checks
 
@@ -33,16 +49,29 @@ npm test -- --run
 npm run build
 ```
 
+The PostgreSQL integration suites require a disposable `unibudget_test`
+database on a local host or the CI PostgreSQL service; they skip when no test
+database is configured and must never point at Supabase. See
+[deployment guidance](./docs/deployment.md) for the exact variables.
+
 The AWS CDK application is in `hello-cdk/`. Its build, tests, and synthesis
 commands are documented in [deployment guidance](./docs/deployment.md).
 
 ## Production
 
 The root [dockerfile](./dockerfile) builds and runs the Astro standalone Node
-server. The application requires PostgreSQL configuration through
-`DATABASE_URL` or the standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and
-`PGPASSWORD` variables. Never commit credentials or `.env` files.
+server. The production database is Supabase PostgreSQL through the session
+pooler. The application requires `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`,
+`PGPASSWORD`, `PGSSLMODE=verify-full`, and the Supabase CA certificate supplied
+through `SUPABASE_CA_CERT`; the CDK tasks read those values from AWS Secrets
+Manager. Never commit credentials, certificates, or `.env` files.
 
-The repository does not currently deploy to AWS automatically. Review
-[deployment and migration guidance](./docs/deployment.md) before provisioning
-or migrating any environment.
+The application fails closed in production if it connects as a role other than
+`unibudget_app`. `/api/health` performs a bounded `SELECT 1` and is used by both
+the container and ALB health checks.
+
+Deployment is manual through the OIDC-based GitHub Actions workflow described
+in [deployment and migration guidance](./docs/deployment.md). The original RDS
+resources remain in the CDK stack but are no longer used by the application;
+they must not be removed without a verified snapshot and an approved cost
+decision.

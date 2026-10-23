@@ -57,6 +57,30 @@ describe('PostgreSQL connection TLS configuration', () => {
     );
   });
 
+  it('accepts an inline Supabase CA certificate without reading a local file', () => {
+    const pem = '-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----';
+    const config = createPostgresPoolConfig(undefined, {
+      NODE_ENV: 'production',
+      PGSSLMODE: 'verify-full',
+      SUPABASE_CA_CERT: pem,
+    });
+
+    expect(config.ssl).toMatchObject({
+      ca: pem,
+      rejectUnauthorized: true,
+    });
+  });
+
+  it('rejects a malformed inline CA certificate', () => {
+    expect(() =>
+      createPostgresPoolConfig(undefined, {
+        NODE_ENV: 'production',
+        PGSSLMODE: 'verify-full',
+        SUPABASE_CA_CERT: 'not-a-certificate',
+      }),
+    ).toThrow(/PEM-encoded CA certificate/);
+  });
+
   it.each(['disable', 'prefer', 'require', 'no-verify'])(
     'rejects the %s TLS mode',
     (sslMode) => {
@@ -83,6 +107,34 @@ describe('PostgreSQL connection TLS configuration', () => {
         { PGSSLMODE: 'verify-full', PGSSLROOTCERT: createCaFile() },
       ),
     ).toThrow(/PGSSLROOTCERT/);
+  });
+
+  it('applies pool timeouts while keeping TLS verification non-overridable', () => {
+    const pem = '-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----';
+    const config = createPostgresPoolConfig(
+      'postgresql://db.example.test/unibudget',
+      {
+        NODE_ENV: 'production',
+        PGSSLMODE: 'verify-full',
+        SUPABASE_CA_CERT: pem,
+      },
+      {
+        connectionTimeoutMillis: 5_000,
+        query_timeout: 15_000,
+        statement_timeout: 15_000,
+        ssl: { rejectUnauthorized: false },
+      },
+    );
+
+    expect(config).toMatchObject({
+      connectionTimeoutMillis: 5_000,
+      query_timeout: 15_000,
+      statement_timeout: 15_000,
+    });
+    expect(config.ssl).toMatchObject({
+      ca: pem,
+      rejectUnauthorized: true,
+    });
   });
 
   it('keeps non-production local PostgreSQL configuration usable without TLS settings', () => {

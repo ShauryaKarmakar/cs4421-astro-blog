@@ -1,0 +1,602 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      imageTag:
+        description: Immutable image tag to build and deploy
+        required: true
+        type: string
+      desiredCount:
+        description: Running task count after migration (1-10); never silently scaled to zero
+        required: true
+        type: string
+      bootstrapOnly:
+        description: First deployment only - create the stack and secrets without migrating or starting the app
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: unibudget-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+  APPLICATION_URL: ${{ vars.APPLICATION_URL }}
+  CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
+  SUPABASE_HOST: ${{ vars.SUPABASE_HOST }}
+  STACK_NAME: UniBudgetStack
+  IMAGE_TAG: ${{ inputs.imageTag }}
+  DESIRED_COUNT: ${{ inputs.desiredCount }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Validate Deployment Inputs
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN APPLICATION_URL CERTIFICATE_ARN SUPABASE_HOST IMAGE_TAG DESIRED_COUNT; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name must be configured for this deployment."
+              exit 1
+            fi
+          done
+          if ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::AWS_ACCOUNT_ID must be a 12-digit AWS account ID."
+            exit 1
+          fi
+          if ! [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]; then
+            echo "::error::AWS_REGION is not a valid AWS region."
+            exit 1
+          fi
+          if ! [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::imageTag must be a valid container image tag."
+            exit 1
+          fi
+          if ! [[ "$DESIRED_COUNT" =~ ^[0-9]+$ ]] || [ "$DESIRED_COUNT" -lt 1 ] || [ "$DESIRED_COUNT" -gt 10 ]; then
+            echo "::error::desiredCount must be an explicit integer between 1 and 10. Use a separate stack deploy to scale down."
+            exit 1
+          fi
+          if ! [[ "$APPLICATION_URL" =~ ^https://[A-Za-z0-9.-]+/?$ ]]; then
+            echo "::error::APPLICATION_URL must be an HTTPS origin such as https://budget.example.com (no path)."
+            exit 1
+          fi
+          if ! [[ "$CERTIFICATE_ARN" =~ ^arn:aws[a-zA-Z-]*:acm:[a-z0-9-]+:[0-9]{12}:certificate/[0-9a-f-]+$ ]]; then
+            echo "::error::CERTIFICATE_ARN must be an ACM certificate ARN."
+            exit 1
+          fi
+          if ! [[ "$CERTIFICATE_ARN" == *":$AWS_REGION:"* ]]; then
+            echo "::error::CERTIFICATE_ARN must be in the ALB region ($AWS_REGION)."
+            exit 1
+          fi
+          if ! [[ "$SUPABASE_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || [[ "$SUPABASE_HOST" == *..* ]]; then
+            echo "::error::SUPABASE_HOST must be the bare pooler hostname copied from the Supabase dashboard."
+            exit 1
+          fi
+
+      - name: Configure AWS Credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: unibudget-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate Certificate and Supabase Host
+        run: |
+          set -euo pipefail
+          caller_account=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$caller_account" != "$AWS_ACCOUNT_ID" ]; then
+            echo "::error::The OIDC role is in account $caller_account, not AWS_ACCOUNT_ID ($AWS_ACCOUNT_ID)."
+            exit 1
+          fi
+          cert_status=$(aws acm describe-certificate \
+            --certificate-arn "$CERTIFICATE_ARN" \
+            --query 'Certificate.Status' \
+            --output text)
+          if [ "$cert_status" != "ISSUED" ]; then
+            echo "::error::The ACM certificate is $cert_status, not ISSUED. Validation must complete before deployment."
+            exit 1
+          fi
+          if ! getent ahosts "$SUPABASE_HOST" >/dev/null; then
+            echo "::error::SUPABASE_HOST does not resolve. Copy the current session-pooler host from the Supabase dashboard."
+            exit 1
+          fi
+          app_host=${APPLICATION_URL#https://}
+          app_host=${app_host%/}
+          if [ "${{ inputs.bootstrapOnly }}" != "true" ] && ! getent ahosts "$app_host" >/dev/null; then
+            echo "::error::APPLICATION_URL does not resolve. Point its DNS record at the ALB before deploying."
+            exit 1
+          fi
+          cert_domain=$(aws acm describe-certificate \
+            --certificate-arn "$CERTIFICATE_ARN" \
+            --query 'Certificate.DomainName' \
+            --output text)
+          cert_names=$(aws acm describe-certificate \
+            --certificate-arn "$CERTIFICATE_ARN" \
+            --query 'Certificate.SubjectAlternativeNames[]' \
+            --output text)
+          cert_match=false
+          for cert_name in $cert_domain $cert_names; do
+            if [ "$cert_name" = "$app_host" ]; then
+              cert_match=true
+            elif [[ "$cert_name" == \*.* ]]; then
+              suffix=${cert_name#\*.}
+              prefix=${app_host%".$suffix"}
+              if [ "$prefix" != "$app_host" ] && [ -n "$prefix" ] && [[ "$prefix" != *.* ]]; then
+                cert_match=true
+              fi
+            fi
+          done
+          if [ "$cert_match" != "true" ]; then
+            echo "::error::APPLICATION_URL's host is not covered by the ACM certificate."
+            exit 1
+          fi
+
+      - name: Setup Node.js Runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            hello-cdk/package-lock.json
+
+      - name: Install Application Dependencies
+        run: npm ci
+
+      - name: Install CDK Dependencies
+        run: npm ci
+        working-directory: hello-cdk
+
+      - name: Determine Whether the Stack Exists
+        id: stack
+        run: |
+          set -euo pipefail
+          if aws cloudformation describe-stacks --stack-name "$STACK_NAME" >/dev/null 2>&1; then
+            stack_exists=true
+          else
+            stack_exists=false
+          fi
+          echo "exists=$stack_exists" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.bootstrapOnly }}" = "true" ] && [ "$stack_exists" = "true" ]; then
+            echo "::error::bootstrapOnly is for the first deployment, but $STACK_NAME already exists. Run a normal deployment instead."
+            exit 1
+          fi
+          if [ "${{ inputs.bootstrapOnly }}" != "true" ] && [ "$stack_exists" = "false" ]; then
+            echo "::error::$STACK_NAME does not exist. Run this workflow once with bootstrapOnly=true, populate the three Supabase secrets, then run a normal deployment."
+            exit 1
+          fi
+
+      - name: Create the Initial Stack Without Starting the Application
+        if: steps.stack.outputs.exists != 'true'
+        env:
+          UNIBUDGET_AWS_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
+          UNIBUDGET_AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          # The ECR repository and migration task definition must exist before
+          # the image is pushed or a migration is attempted. Desired count is
+          # hard-coded to zero until the migration succeeds.
+          npx cdk deploy \
+            --require-approval never \
+            -c imageTag="$IMAGE_TAG" \
+            -c desiredCount=0 \
+            -c certificateArn="$CERTIFICATE_ARN" \
+            -c applicationUrl="$APPLICATION_URL" \
+            -c supabaseHost="$SUPABASE_HOST"
+        working-directory: hello-cdk
+
+      - name: Read Stack Outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          read_output() {
+            aws cloudformation describe-stacks \
+              --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
+              --output text
+          }
+          output_value() {
+            local value
+            value=$(read_output "$1")
+            if [ -z "$value" ] || [ "$value" = "None" ]; then
+              echo "::error::Stack output $1 is missing. The stack is not deployment-ready." >&2
+              exit 1
+            fi
+            printf '%s' "$value"
+          }
+          application_url=$(output_value ApplicationUrl)
+          if [ "${application_url%/}" != "${APPLICATION_URL%/}" ]; then
+            echo "::error::APPLICATION_URL (${APPLICATION_URL}) does not match the stack output (${application_url}). Use the custom domain attached to the ALB certificate."
+            exit 1
+          fi
+          {
+            echo "repository_uri=$(output_value ImageRepositoryUri)"
+            echo "cluster=$(output_value ClusterName)"
+            echo "service=$(output_value ServiceName)"
+            echo "application_task_definition=$(output_value TaskDefinitionArn)"
+            echo "application_task_role_arn=$(output_value ApplicationTaskRoleArn)"
+            echo "application_task_execution_role_arn=$(output_value ApplicationTaskExecutionRoleArn)"
+            echo "migration_task_definition=$(output_value MigrationTaskDefinitionArn)"
+            echo "migration_task_role_arn=$(output_value MigrationTaskRoleArn)"
+            echo "migration_task_execution_role_arn=$(output_value MigrationTaskExecutionRoleArn)"
+            echo "supabase_application_secret_arn=$(output_value SupabaseApplicationSecretArn)"
+            echo "supabase_migration_secret_arn=$(output_value SupabaseMigrationSecretArn)"
+            echo "supabase_ca_secret_arn=$(output_value SupabaseCaSecretArn)"
+            echo "security_group=$(output_value ApplicationSecurityGroupId)"
+            echo "subnets=$(output_value PublicSubnetIds)"
+            echo "load_balancer_dns=$(output_value LoadBalancerDnsName)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify Application DNS Target
+        if: inputs.bootstrapOnly != true
+        env:
+          LOAD_BALANCER_DNS: ${{ steps.outputs.outputs.load_balancer_dns }}
+        run: |
+          set -euo pipefail
+          app_host=${APPLICATION_URL#https://}
+          app_host=${app_host%/}
+          if [ -z "$LOAD_BALANCER_DNS" ]; then
+            echo "::error::LoadBalancerDnsName stack output is empty."
+            exit 1
+          fi
+          if ! command -v getent >/dev/null 2>&1; then
+            echo "::error::getent is unavailable; cannot verify that $app_host targets the ALB."
+            exit 1
+          fi
+          # Compare IPv4 answers so a CNAME or Route 53 alias to the ALB is
+          # accepted, but a proxy, CDN, stale record, or wrong ALB is rejected
+          # before the migration task is started.
+          app_ips=$(getent ahostsv4 "$app_host" | awk '{print $1}' | sort -u || true)
+          alb_ips=$(getent ahostsv4 "$LOAD_BALANCER_DNS" | awk '{print $1}' | sort -u || true)
+          if [ -z "$app_ips" ]; then
+            echo "::error::APPLICATION_URL host $app_host has no IPv4 address; refusing to migrate."
+            exit 1
+          fi
+          if [ -z "$alb_ips" ]; then
+            echo "::error::$LOAD_BALANCER_DNS has no IPv4 address; refusing to migrate."
+            exit 1
+          fi
+          while IFS= read -r ip; do
+            [ -n "$ip" ] || continue
+            if ! grep -Fxq "$ip" <<<"$alb_ips"; then
+              echo "::error::$app_host resolves to $ip, which is not an address of $LOAD_BALANCER_DNS. Point the DNS record directly at the ALB; do not use a proxy or CDN."
+              exit 1
+            fi
+          done <<<"$app_ips"
+          echo "Application DNS target matches $LOAD_BALANCER_DNS."
+
+      - name: Build and Push Application Image
+        if: inputs.bootstrapOnly != true
+        id: image
+        env:
+          REPOSITORY_URI: ${{ steps.outputs.outputs.repository_uri }}
+        run: |
+          set -euo pipefail
+          expected_prefix="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/"
+          if [[ "$REPOSITORY_URI" != "$expected_prefix"* ]]; then
+            echo "::error::The ECR output is not a repository URI in this account and region."
+            exit 1
+          fi
+          repository_name=${REPOSITORY_URI#"$expected_prefix"}
+          if [ -z "$repository_name" ] || [[ "$repository_name" == *".amazonaws.com"* ]]; then
+            echo "::error::The ECR stack output does not contain a repository name."
+            exit 1
+          fi
+          if aws ecr describe-images \
+            --repository-name "$repository_name" \
+            --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "::error::Image tag $IMAGE_TAG already exists and tags are immutable. Choose a new tag."
+            exit 1
+          fi
+          image_uri="$REPOSITORY_URI:$IMAGE_TAG"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          docker build -f dockerfile -t "$image_uri" .
+          docker push "$image_uri"
+          aws ecr describe-images \
+            --repository-name "$repository_name" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text >/dev/null
+          echo "image_uri=$image_uri" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Migration Task Configuration
+        if: inputs.bootstrapOnly != true
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+          APPLICATION_TASK_DEFINITION: ${{ steps.outputs.outputs.application_task_definition }}
+          APPLICATION_TASK_ROLE_ARN: ${{ steps.outputs.outputs.application_task_role_arn }}
+          APPLICATION_TASK_EXECUTION_ROLE_ARN: ${{ steps.outputs.outputs.application_task_execution_role_arn }}
+          MIGRATION_TASK_DEFINITION: ${{ steps.outputs.outputs.migration_task_definition }}
+          MIGRATION_TASK_ROLE_ARN: ${{ steps.outputs.outputs.migration_task_role_arn }}
+          MIGRATION_TASK_EXECUTION_ROLE_ARN: ${{ steps.outputs.outputs.migration_task_execution_role_arn }}
+          SUPABASE_APPLICATION_SECRET_ARN: ${{ steps.outputs.outputs.supabase_application_secret_arn }}
+          SUPABASE_MIGRATION_SECRET_ARN: ${{ steps.outputs.outputs.supabase_migration_secret_arn }}
+          SUPABASE_CA_SECRET_ARN: ${{ steps.outputs.outputs.supabase_ca_secret_arn }}
+          CLUSTER: ${{ steps.outputs.outputs.cluster }}
+          SERVICE: ${{ steps.outputs.outputs.service }}
+        run: |
+          set -euo pipefail
+          if [ -z "${IMAGE_URI:-}" ]; then
+            echo "::error::The built image URI is empty; refusing to migrate without an explicit image override."
+            exit 1
+          fi
+          cluster_status=$(aws ecs describe-clusters \
+            --clusters "$CLUSTER" \
+            --query 'clusters[0].status' \
+            --output text)
+          if [ "$cluster_status" != "ACTIVE" ]; then
+            echo "::error::ECS cluster $CLUSTER is $cluster_status, not ACTIVE."
+            exit 1
+          fi
+          service_status=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --query 'services[0].status' \
+            --output text)
+          if [ "$service_status" != "ACTIVE" ]; then
+            echo "::error::ECS service $SERVICE is $service_status, not ACTIVE."
+            exit 1
+          fi
+
+          require_role_arn() {
+            local label=$1 actual=$2 expected=$3
+            if [ -z "$actual" ] || [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+              echo "::error::The $label is '$actual', expected '$expected' from the stack output."
+              exit 1
+            fi
+          }
+
+          application_task_json=$(aws ecs describe-task-definition \
+            --task-definition "$APPLICATION_TASK_DEFINITION" \
+            --query 'taskDefinition' \
+            --output json)
+          require_role_arn \
+            "application task role" \
+            "$(jq -r '.taskRoleArn // empty' <<<"$application_task_json")" \
+            "$APPLICATION_TASK_ROLE_ARN"
+          require_role_arn \
+            "application task execution role" \
+            "$(jq -r '.executionRoleArn // empty' <<<"$application_task_json")" \
+            "$APPLICATION_TASK_EXECUTION_ROLE_ARN"
+
+          task_json=$(aws ecs describe-task-definition \
+            --task-definition "$MIGRATION_TASK_DEFINITION" \
+            --query 'taskDefinition' \
+            --output json)
+          require_role_arn \
+            "migration task role" \
+            "$(jq -r '.taskRoleArn // empty' <<<"$task_json")" \
+            "$MIGRATION_TASK_ROLE_ARN"
+          require_role_arn \
+            "migration task execution role" \
+            "$(jq -r '.executionRoleArn // empty' <<<"$task_json")" \
+            "$MIGRATION_TASK_EXECUTION_ROLE_ARN"
+
+          container=$(jq -c '.containerDefinitions[] | select(.name == "MigrationContainer")' <<<"$task_json")
+          if [ -z "$container" ]; then
+            echo "::error::MigrationContainer is missing from $MIGRATION_TASK_DEFINITION."
+            exit 1
+          fi
+          command=$(jq -r '.command | join(" ")' <<<"$container")
+          if [ "$command" != "node ./scripts/migrate.mjs" ]; then
+            echo "::error::MigrationContainer does not run the migration entrypoint."
+            exit 1
+          fi
+
+          environment_value() {
+            jq -r --arg name "$1" \
+              '.environment[] | select(.name == $name) | .value' <<<"$container"
+          }
+          require_environment() {
+            actual=$(environment_value "$1")
+            if [ "$actual" != "$2" ]; then
+              echo "::error::Migration task $1 is '$actual', expected '$2'. Deploy the stack with the current Supabase configuration before migrating."
+              exit 1
+            fi
+          }
+          require_environment NODE_ENV production
+          require_environment PGHOST "$SUPABASE_HOST"
+          require_environment PGPORT 5432
+          require_environment PGDATABASE postgres
+          require_environment PGSSLMODE verify-full
+
+          expected_secrets="APP_DATABASE_PASSWORD PGPASSWORD PGUSER SUPABASE_CA_CERT"
+          actual_secrets=$(jq -r '[.secrets[].name] | sort | join(" ")' <<<"$container")
+          if [ "$actual_secrets" != "$expected_secrets" ]; then
+            echo "::error::Migration task secret names are $actual_secrets, expected $expected_secrets."
+            exit 1
+          fi
+          require_exact_secret() {
+            local name=$1 expected=$2 count actual
+            if [ -z "$expected" ]; then
+              echo "::error::The stack output for $name's secret ARN is empty."
+              exit 1
+            fi
+            count=$(jq --arg name "$name" \
+              '[.secrets[] | select(.name == $name)] | length' <<<"$container")
+            if [ "$count" -ne 1 ]; then
+              echo "::error::Migration task must reference $name exactly once; found $count."
+              exit 1
+            fi
+            actual=$(jq -r --arg name "$name" \
+              '.secrets[] | select(.name == $name) | .valueFrom' <<<"$container")
+            # A JSON-key reference appends :<key>:: to the secret ARN. The ARN
+            # itself must match the stack output exactly; a substring match
+            # would accept another secret whose name contains the expected one.
+            case "$actual" in
+              "$expected"|"$expected":*::) ;;
+              *)
+                echo "::error::Migration task $name does not reference the expected secret ARN."
+                exit 1
+                ;;
+            esac
+          }
+          require_exact_secret PGUSER "$SUPABASE_MIGRATION_SECRET_ARN"
+          require_exact_secret PGPASSWORD "$SUPABASE_MIGRATION_SECRET_ARN"
+          require_exact_secret APP_DATABASE_PASSWORD "$SUPABASE_APPLICATION_SECRET_ARN"
+          require_exact_secret SUPABASE_CA_CERT "$SUPABASE_CA_SECRET_ARN"
+
+          echo "Migration task configuration matches the current host, role ARNs, image override, and exact secret ARNs."
+
+      - name: Run the One-Off Migration Task
+        if: inputs.bootstrapOnly != true
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+          MIGRATION_TASK_DEFINITION: ${{ steps.outputs.outputs.migration_task_definition }}
+          CLUSTER: ${{ steps.outputs.outputs.cluster }}
+          SECURITY_GROUP: ${{ steps.outputs.outputs.security_group }}
+          SUBNETS: ${{ steps.outputs.outputs.subnets }}
+        run: |
+          set -euo pipefail
+          task_arn=""
+          task_finished="false"
+
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ -n "$task_arn" ] && [ "$task_finished" != "true" ]; then
+              echo "::warning::Migration task was interrupted; stopping $task_arn."
+              aws ecs stop-task \
+                --cluster "$CLUSTER" \
+                --task "$task_arn" \
+                --reason "Deployment cancelled or migration step failed" >/dev/null || true
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT TERM
+
+          run_output=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "$MIGRATION_TASK_DEFINITION" \
+            --launch-type FARGATE \
+            --count 1 \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"MigrationContainer\",\"image\":\"$IMAGE_URI\"}]}")
+          task_arn=$(jq -r '.tasks[0].taskArn // empty' <<<"$run_output")
+          failure_reason=$(jq -r '.failures[0].reason // empty' <<<"$run_output")
+          if [ -z "$task_arn" ]; then
+            echo "::error::ECS did not start the migration task: ${failure_reason:-unknown reason}"
+            exit 1
+          fi
+          echo "Started migration task: $task_arn"
+
+          deadline=$((SECONDS + 1800))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            description=$(aws ecs describe-tasks \
+              --cluster "$CLUSTER" \
+              --tasks "$task_arn" \
+              --query 'tasks[0]' \
+              --output json)
+            last_status=$(jq -r '.lastStatus // empty' <<<"$description")
+            if [ "$last_status" = "STOPPED" ]; then
+              task_finished="true"
+              break
+            fi
+            sleep 10
+          done
+          if [ "$task_finished" != "true" ]; then
+            echo "::error::Migration task did not finish within 30 minutes; stopping it."
+            aws ecs stop-task \
+              --cluster "$CLUSTER" \
+              --task "$task_arn" \
+              --reason "Migration exceeded the 30-minute deployment limit" >/dev/null || true
+            task_finished="true"
+            exit 1
+          fi
+
+          stopped_reason=$(jq -r '.stoppedReason // empty' <<<"$description")
+          exit_codes=$(jq -r '[.containers[].exitCode // empty] | map(tostring) | join(",")' <<<"$description")
+          if [ "$exit_codes" != "0" ]; then
+            echo "::error::Migration task stopped with exit codes [$exit_codes]: $stopped_reason"
+            exit 1
+          fi
+          echo "Migration task completed successfully."
+
+      - name: Deploy the Stack with the Migrated Image
+        if: inputs.bootstrapOnly != true
+        env:
+          UNIBUDGET_AWS_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
+          UNIBUDGET_AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          # Rollout happens only after the migration succeeded. desiredCount is
+          # validated above and is never defaulted to zero.
+          npx cdk deploy \
+            --require-approval never \
+            -c imageTag="$IMAGE_TAG" \
+            -c desiredCount="$DESIRED_COUNT" \
+            -c certificateArn="$CERTIFICATE_ARN" \
+            -c applicationUrl="$APPLICATION_URL" \
+            -c supabaseHost="$SUPABASE_HOST"
+        working-directory: hello-cdk
+
+      - name: Wait for the ECS Service
+        if: inputs.bootstrapOnly != true
+        env:
+          CLUSTER: ${{ steps.outputs.outputs.cluster }}
+          SERVICE: ${{ steps.outputs.outputs.service }}
+        run: |
+          set -euo pipefail
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+
+      - name: Verify the Running Image
+        if: inputs.bootstrapOnly != true
+        env:
+          CLUSTER: ${{ steps.outputs.outputs.cluster }}
+          SERVICE: ${{ steps.outputs.outputs.service }}
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+        run: |
+          set -euo pipefail
+          # A circuit-breaker rollback can leave the old task set healthy. Do
+          # not report success unless the service is actually running the image
+          # built by this workflow.
+          service_json=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --query 'services[0]' \
+            --output json)
+          rollout_state=$(jq -r '.deployments[] | select(.status == "PRIMARY") | .rolloutState // empty' <<<"$service_json")
+          if [ "$rollout_state" != "COMPLETED" ]; then
+            echo "::error::The primary ECS deployment is '$rollout_state', not COMPLETED. A rollback may have occurred."
+            exit 1
+          fi
+          task_definition=$(jq -r '.taskDefinition // empty' <<<"$service_json")
+          running_image=$(aws ecs describe-task-definition \
+            --task-definition "$task_definition" \
+            --query 'taskDefinition.containerDefinitions[0].image' \
+            --output text)
+          if [ "$running_image" != "$IMAGE_URI" ]; then
+            echo "::error::The ECS service is running $running_image, not the image built by this workflow ($IMAGE_URI)."
+            exit 1
+          fi
+          echo "ECS service is running the expected image."
+
+      - name: Verify Application Health
+        if: inputs.bootstrapOnly != true
+        run: |
+          set -euo pipefail
+          health_url="${APPLICATION_URL%/}/api/health"
+          response=$(curl --fail --silent --show-error \
+            --retry 12 --retry-delay 5 --retry-connrefused \
+            "$health_url")
+          if ! jq -e '.status == "ok"' >/dev/null <<<"$response"; then
+            echo "::error::Health endpoint returned an unexpected response."
+            exit 1
+          fi
+          echo "Application is healthy at $health_url"
