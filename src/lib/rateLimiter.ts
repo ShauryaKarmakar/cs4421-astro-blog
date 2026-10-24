@@ -15,9 +15,11 @@
  *    and automated testing guards without unbounded memory accumulation.
  *
  * PROXY & IP FORWARDING BEHAVIOR:
- * When deployed behind an AWS Application Load Balancer (ALB), the ALB appends the
- * connecting remote client IP to the end of any incoming X-Forwarded-For header:
- *   X-Forwarded-For: <client-spoofed-entries...>, <real-connecting-alb-client-ip>
+ * In production CloudFront appends the viewer IP to any incoming
+ * X-Forwarded-For header, and the ALB preserves that header
+ * (routing.http.xff_header_processing.mode=preserve) instead of appending the
+ * CloudFront edge IP after it:
+ *   X-Forwarded-For: <client-supplied-entries...>, <cloudfront-viewer-ip>
  * Therefore, getClientIP() extracts the rightmost (last) non-empty IP entry from
  * X-Forwarded-For. If X-Forwarded-For is not present, it checks X-Real-IP, falling back
  * to 'unknown' if neither is provided.
@@ -159,8 +161,8 @@ export const authLimiter = new RateLimiter(15 * 60 * 1000, 5);
 
 /**
  * Extracts the remote client IP from request headers.
- * Under an AWS ALB deployment, ALB appends the remote client IP to the end of X-Forwarded-For.
- * Taking the rightmost non-empty IP entry ensures client-spoofed prefix entries are ignored.
+ * CloudFront appends the viewer IP and the ALB preserves the header, so the rightmost
+ * non-empty IP entry is the viewer IP and client-supplied prefix entries are ignored.
  */
 export function getClientIP(request: Request): string {
   const forwarded = request.headers.get('x-forwarded-for');

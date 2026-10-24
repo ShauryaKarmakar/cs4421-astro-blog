@@ -90,9 +90,9 @@ describe('deployment workflow contracts', () => {
     expect(validation).not.toContain('contains($needle)');
   });
 
-  it('checks the application DNS target before building or migrating', () => {
-    const dnsStepIndex = workflow.indexOf(
-      '      - name: Verify Application DNS Target\n',
+  it('verifies CloudFront delivery before building or migrating', () => {
+    const cloudFrontStepIndex = workflow.indexOf(
+      '      - name: Verify CloudFront Delivery Configuration\n',
     );
     const buildStepIndex = workflow.indexOf(
       '      - name: Build and Push Application Image\n',
@@ -101,18 +101,95 @@ describe('deployment workflow contracts', () => {
       '      - name: Run the One-Off Migration Task\n',
     );
 
-    expect(dnsStepIndex).toBeGreaterThan(-1);
-    expect(dnsStepIndex).toBeLessThan(buildStepIndex);
-    expect(dnsStepIndex).toBeLessThan(migrationStepIndex);
+    expect(cloudFrontStepIndex).toBeGreaterThan(-1);
+    expect(cloudFrontStepIndex).toBeLessThan(buildStepIndex);
+    expect(cloudFrontStepIndex).toBeLessThan(migrationStepIndex);
 
-    const dnsStep = stepBlock('Verify Application DNS Target');
-    expect(dnsStep).toContain('if: inputs.bootstrapOnly != true');
-    expect(dnsStep).toContain(
+    const cloudFrontStep = stepBlock('Verify CloudFront Delivery Configuration');
+    expect(cloudFrontStep).toContain('if: inputs.bootstrapOnly != true');
+    expect(cloudFrontStep).toContain(
+      'DISTRIBUTION_ID: ${{ steps.outputs.outputs.cloudfront_distribution_id }}',
+    );
+    expect(cloudFrontStep).toContain(
       'LOAD_BALANCER_DNS: ${{ steps.outputs.outputs.load_balancer_dns }}',
     );
-    expect(dnsStep).toContain('getent ahostsv4 "$app_host"');
-    expect(dnsStep).toContain('getent ahostsv4 "$LOAD_BALANCER_DNS"');
-    expect(dnsStep).toContain('grep -Fxq "$ip"');
-    expect(dnsStep).toContain('exit 1');
+    expect(cloudFrontStep).toContain('cloudfront get-distribution-config');
+    expect(cloudFrontStep).toContain('.Origins[0].DomainName');
+    expect(cloudFrontStep).toContain('"redirect-to-https"');
+    expect(cloudFrontStep).toContain(
+      '4135ea2d-6df8-44a3-9df3-4b5a84be39ad',
+    );
+    expect(cloudFrontStep).toContain(
+      '216adef6-5c7f-47e4-b989-5492eafa07d3',
+    );
+    expect(cloudFrontStep).toContain('DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT');
+    expect(cloudFrontStep).toContain('exit 1');
+  });
+
+  it('uses the derived CloudFront outputs as the only public HTTPS URL', () => {
+    const outputs = stepBlock('Read Stack Outputs');
+    expect(outputs).toContain(
+      'application_url=$(output_value ApplicationUrl)',
+    );
+    expect(outputs).toContain(
+      'echo "cloudfront_distribution_id=$(output_value CloudFrontDistributionId)"',
+    );
+    expect(outputs).toContain(
+      'echo "cloudfront_domain_name=$cloudfront_domain"',
+    );
+    expect(outputs).toContain('https://$cloudfront_domain');
+
+    expect(workflow).not.toContain('CERTIFICATE_ARN: ${{ vars.');
+    expect(workflow).not.toContain('APPLICATION_URL: ${{ vars.');
+    expect(workflow).not.toContain('aws acm describe-certificate');
+    expect(workflow).not.toContain('-c certificateArn');
+    expect(workflow).not.toContain('-c applicationUrl');
+
+    const health = stepBlock('Verify Application Health Through CloudFront');
+    expect(health).toContain(
+      'APPLICATION_URL: ${{ steps.outputs.outputs.application_url }}',
+    );
+    expect(health).toContain('https://[a-z0-9]+\\.cloudfront\\.net');
+    expect(health).toContain('/api/health');
+  });
+
+  it('restricts the load balancer to the CloudFront origin-facing prefix list', () => {
+    expect(workflow).toContain('com.amazonaws.global.cloudfront.origin-facing');
+    expect(workflow).toContain(
+      '-c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST"',
+    );
+    expect(workflow).toContain(
+      'ORIGIN_PREFIX_LIST: ${{ steps.prerequisites.outputs.origin_prefix_list }}',
+    );
+    expect(workflow).not.toContain('getent ahostsv4');
+  });
+
+  it('requires a confirmed recovery plan before migrating', () => {
+    expect(workflow).toContain('recoveryPlanVerified:');
+    const validation = stepBlock('Validate Deployment Inputs');
+    expect(validation).toContain('inputs.recoveryPlanVerified');
+    expect(validation).toContain('restorable Supabase backup');
+  });
+
+  it('keeps the safe deployment order', () => {
+    const names = [
+      'Validate Deployment Inputs',
+      'Create the Initial Stack Without Starting the Application',
+      'Read Stack Outputs',
+      'Verify CloudFront Delivery Configuration',
+      'Build and Push Application Image',
+      'Validate Migration Task Configuration',
+      'Run the One-Off Migration Task',
+      'Deploy the Stack with the Migrated Image',
+      'Wait for the ECS Service',
+      'Verify the Running Image',
+      'Verify Application Health Through CloudFront',
+    ];
+    const positions = names.map((name) =>
+      workflow.indexOf(`      - name: ${name}\n`),
+    );
+
+    expect(positions.every((index) => index > -1)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
 });

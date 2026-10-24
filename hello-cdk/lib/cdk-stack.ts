@@ -1,4 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
@@ -29,13 +31,12 @@ function createEmptySecret(
 }
 
 export interface UniBudgetStackProps extends cdk.StackProps {
-  certificateArn?: string;
   desiredCount?: number;
   imageTag?: string;
-  applicationUrl?: string;
   supabaseHost?: string;
   supabasePort?: string;
   supabaseDatabase?: string;
+  cloudFrontOriginPrefixListId?: string;
 }
 
 function isValidDnsHostname(value: string): boolean {
@@ -89,49 +90,20 @@ export class UniBudgetStack extends cdk.Stack {
       throw new Error('supabasePort must be a numeric PostgreSQL port between 1 and 65535.');
     }
 
-    const certificateArn = props.certificateArn?.trim();
-    if (
-      certificateArn &&
-      !/^arn:aws[a-zA-Z-]*:acm:[a-z0-9-]+:[0-9]{12}:certificate\/[0-9a-f-]+$/.test(
-        certificateArn,
-      )
-    ) {
-      throw new Error('certificateArn must be an ACM certificate ARN.');
-    }
-
-    const applicationUrl = props.applicationUrl?.trim();
-    if (applicationUrl) {
-      let parsed: URL;
-      try {
-        parsed = new URL(applicationUrl);
-      } catch {
-        throw new Error('applicationUrl must be a valid HTTPS URL.');
-      }
-      if (parsed.protocol !== 'https:') {
-        throw new Error('applicationUrl must use HTTPS when an ACM certificate is configured.');
-      }
-      if (
-        parsed.pathname !== '/' ||
-        parsed.search ||
-        parsed.hash ||
-        parsed.port ||
-        parsed.username ||
-        parsed.password
-      ) {
-        throw new Error('applicationUrl must be an origin such as https://budget.example.com.');
-      }
-      if (!certificateArn) {
-        throw new Error('applicationUrl requires certificateArn; HTTPS is not exposed without a certificate.');
-      }
-    }
-    if (certificateArn && !applicationUrl) {
+    // HTTPS is terminated by CloudFront with its default *.cloudfront.net
+    // certificate, so no custom domain or ACM certificate is required. The
+    // ALB itself stays on HTTP and accepts connections only from the
+    // AWS-managed CloudFront origin-facing prefix list: that rule is what keeps
+    // authenticated traffic from bypassing HTTPS by reaching the ALB directly.
+    const cloudFrontOriginPrefixListId = props.cloudFrontOriginPrefixListId?.trim();
+    if (!cloudFrontOriginPrefixListId) {
       throw new Error(
-        'applicationUrl is required with certificateArn: the ACM certificate covers your domain, not the ALB-generated hostname.',
+        'cloudFrontOriginPrefixListId is required: the ALB accepts traffic only from the CloudFront origin-facing prefix list.',
       );
     }
-    if (desiredCount > 0 && !certificateArn) {
+    if (!/^pl-[0-9a-f]{8,32}$/.test(cloudFrontOriginPrefixListId)) {
       throw new Error(
-        'certificateArn is required when desiredCount is greater than zero; authenticated traffic must use HTTPS.',
+        'cloudFrontOriginPrefixListId must be an EC2 managed prefix list ID such as pl-0123456789abcdef0.',
       );
     }
 
@@ -392,6 +364,11 @@ export class UniBudgetStack extends cdk.Stack {
       internetFacing: true,
       securityGroup: loadBalancerSecurityGroup,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      // CloudFront appends the viewer IP to X-Forwarded-For and the ALB would
+      // normally append the CloudFront edge IP after it. Preserving the header
+      // keeps the viewer IP last, which is what src/lib/rateLimiter.ts trusts,
+      // so authentication rate limits stay per user instead of per edge.
+      xffHeaderProcessingMode: elbv2.XffHeaderProcessingMode.PRESERVE,
     });
     const targetGroup = new elbv2.ApplicationTargetGroup(this, 'ApplicationTargets', {
       vpc,
@@ -427,50 +404,62 @@ export class UniBudgetStack extends cdk.Stack {
       'Application requests from the load balancer.',
     );
 
-    if (certificateArn) {
-      loadBalancerSecurityGroup.addIngressRule(
-        ec2.Peer.anyIpv4(),
-        ec2.Port.tcp(443),
-        'HTTPS from the internet.',
-      );
-      loadBalancer.addListener('HttpListener', {
-        port: 80,
-        open: false,
-        defaultAction: elbv2.ListenerAction.redirect({
-          protocol: 'HTTPS',
-          port: '443',
-          permanent: true,
-        }),
-      });
-      loadBalancer.addListener('HttpsListener', {
-        port: 443,
-        open: false,
-        certificates: [elbv2.ListenerCertificate.fromArn(certificateArn)],
-        defaultTargetGroups: [targetGroup],
-      });
-    } else {
-      loadBalancerSecurityGroup.addIngressRule(
-        ec2.Peer.anyIpv4(),
-        ec2.Port.tcp(80),
-        'HTTP from the internet for a demonstration deployment.',
-      );
-      loadBalancer.addListener('HttpListener', {
-        port: 80,
-        open: false,
-        defaultTargetGroups: [targetGroup],
-      });
-    }
+    // No 0.0.0.0/0 rule: the ALB is reachable only from CloudFront's
+    // origin-facing servers, so plain HTTP cannot be used to bypass the HTTPS
+    // endpoint and submit credentials or session cookies directly.
+    loadBalancerSecurityGroup.addIngressRule(
+      ec2.Peer.prefixList(cloudFrontOriginPrefixListId),
+      ec2.Port.tcp(80),
+      'HTTP from the CloudFront origin-facing prefix list only.',
+    );
+    loadBalancer.addListener('HttpListener', {
+      port: 80,
+      open: false,
+      defaultTargetGroups: [targetGroup],
+    });
 
-    // The ALB DNS name is not covered by a custom-domain ACM certificate. When
-    // HTTPS is configured, the output is the explicitly supplied custom domain;
-    // point its DNS record at this load balancer before deploying traffic.
+    // CloudFront terminates TLS with its AWS-managed certificate on the
+    // generated *.cloudfront.net hostname, so no certificate, DNS record, or
+    // custom domain is needed. Every viewer request is redirected to HTTPS.
+    // Caching is disabled for the whole distribution: Astro renders per-user
+    // HTML and the same host serves login, session, and budget APIs, so no
+    // response may be shared between viewers. AllViewer forwards every viewer
+    // header (including Host), all cookies (the session cookie), and all query
+    // strings, and all HTTP methods are allowed for the API routes.
+    const distribution = new cloudfront.Distribution(this, 'ApplicationDistribution', {
+      comment: 'UniBudget SSR delivery through the AWS-generated CloudFront hostname.',
+      enabled: true,
+      httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
+      defaultBehavior: {
+        origin: new origins.HttpOrigin(loadBalancer.loadBalancerDnsName, {
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+          connectionAttempts: 3,
+          readTimeout: cdk.Duration.seconds(30),
+        }),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
+        compress: true,
+      },
+    });
+
+    // The public URL is derived from the distribution, never supplied by hand.
     new cdk.CfnOutput(this, 'ApplicationUrl', {
-      value: applicationUrl ?? `http://${loadBalancer.loadBalancerDnsName}`,
+      value: `https://${distribution.distributionDomainName}`,
+      description:
+        'Public HTTPS origin on the AWS-generated CloudFront hostname; no custom domain is required.',
+    });
+    new cdk.CfnOutput(this, 'CloudFrontDistributionId', {
+      value: distribution.distributionId,
+    });
+    new cdk.CfnOutput(this, 'CloudFrontDomainName', {
+      value: distribution.distributionDomainName,
     });
     new cdk.CfnOutput(this, 'LoadBalancerDnsName', {
       value: loadBalancer.loadBalancerDnsName,
       description:
-        'Point the custom application domain at this ALB DNS name when using an ACM certificate.',
+        'CloudFront origin only. The load balancer security group rejects traffic that is not from CloudFront.',
     });
     new cdk.CfnOutput(this, 'ImageRepositoryUri', { value: repository.repositoryUri });
     new cdk.CfnOutput(this, 'ClusterName', { value: cluster.clusterName });

@@ -3,12 +3,14 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { UniBudgetStack } from '../lib/cdk-stack';
 
 const testSupabaseHost = 'aws-0-eu-central-1.pooler.supabase.com';
+const testPrefixListId = 'pl-0123456789abcdef0';
 
 function createTemplate(props: ConstructorParameters<typeof UniBudgetStack>[2] = {}) {
   const app = new cdk.App();
   const stack = new UniBudgetStack(app, 'TestUniBudgetStack', {
     supabaseHost: testSupabaseHost,
     imageTag: 'test-image-tag',
+    cloudFrontOriginPrefixListId: testPrefixListId,
     ...props,
   });
   return Template.fromStack(stack);
@@ -149,12 +151,8 @@ describe('UniBudget infrastructure', () => {
     });
   });
 
-  test('retains the ECR repository and enables HTTPS redirect when a certificate is configured', () => {
-    const template = createTemplate({
-      certificateArn:
-        'arn:aws:acm:us-east-1:111111111111:certificate/11111111-1111-1111-1111-111111111111',
-      applicationUrl: 'https://budget.example.com',
-    });
+  test('retains the ECR repository and keeps a single HTTP listener for the CloudFront origin', () => {
+    const template = createTemplate();
 
     template.hasResourceProperties('AWS::ECR::Repository', {
       ImageTagMutability: 'IMMUTABLE',
@@ -163,25 +161,93 @@ describe('UniBudget infrastructure', () => {
     template.hasResource('AWS::ECR::Repository', {
       DeletionPolicy: 'Retain',
     });
+    template.resourceCountIs('AWS::ElasticLoadBalancingV2::Listener', 1);
     template.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', {
       Port: 80,
-      DefaultActions: Match.arrayWith([
-        Match.objectLike({
-          Type: 'redirect',
-          RedirectConfig: Match.objectLike({
-            Protocol: 'HTTPS',
-            Port: '443',
-          }),
-        }),
-      ]),
+      Protocol: 'HTTP',
+      DefaultActions: Match.arrayWith([Match.objectLike({ Type: 'forward' })]),
     });
-    template.resourceCountIs('AWS::ElasticLoadBalancingV2::Listener', 2);
   });
 
-  test('refuses a nonzero desired count without an HTTPS certificate', () => {
-    expect(() => createTemplate({ desiredCount: 1 })).toThrow(
-      /certificateArn is required/,
+  test('serves HTTPS from the AWS-generated CloudFront hostname without a custom domain', () => {
+    const template = createTemplate();
+    const distributions = Object.values(
+      template.findResources('AWS::CloudFront::Distribution'),
     );
+
+    expect(distributions).toHaveLength(1);
+    const config = distributions[0].Properties.DistributionConfig;
+    expect(config.Enabled).toBe(true);
+    expect(config.Aliases).toBeUndefined();
+    expect(config.ViewerCertificate).toBeUndefined();
+    expect(config.HttpVersion).toBe('http2and3');
+    template.resourceCountIs('AWS::CertificateManager::Certificate', 0);
+  });
+
+  test('forwards cookies, headers, and methods to the ALB without caching responses', () => {
+    const template = createTemplate();
+    const distributions = Object.values(
+      template.findResources('AWS::CloudFront::Distribution'),
+    );
+    const config = distributions[0].Properties.DistributionConfig;
+    const behavior = config.DefaultCacheBehavior;
+    const origin = config.Origins[0];
+
+    expect(behavior.ViewerProtocolPolicy).toBe('redirect-to-https');
+    expect(behavior.CachePolicyId).toBe(
+      '4135ea2d-6df8-44a3-9df3-4b5a84be39ad',
+    );
+    expect(behavior.OriginRequestPolicyId).toBe(
+      '216adef6-5c7f-47e4-b989-5492eafa07d3',
+    );
+    expect(behavior.AllowedMethods).toEqual([
+      'GET',
+      'HEAD',
+      'OPTIONS',
+      'PUT',
+      'PATCH',
+      'POST',
+      'DELETE',
+    ]);
+    expect(origin.CustomOriginConfig.OriginProtocolPolicy).toBe('http-only');
+    expect(origin.DomainName).toEqual({
+      'Fn::GetAtt': [
+        expect.stringContaining('ApplicationLoadBalancer'),
+        'DNSName',
+      ],
+    });
+  });
+
+  test('allows the ALB only from the CloudFront origin-facing prefix list', () => {
+    const template = createTemplate();
+    const ingress = Object.values(
+      template.findResources('AWS::EC2::SecurityGroupIngress'),
+    );
+    const httpRule = ingress.find((rule) => rule.Properties?.FromPort === 80);
+
+    expect(httpRule?.Properties?.SourcePrefixListId).toBe(testPrefixListId);
+    expect(httpRule?.Properties?.CidrIp).toBeUndefined();
+    expect(httpRule?.Properties?.CidrIpv6).toBeUndefined();
+    expect(ingress.some((rule) => rule.Properties?.FromPort === 443)).toBe(false);
+  });
+
+  test('preserves the CloudFront viewer address for authentication rate limiting', () => {
+    const template = createTemplate();
+    const loadBalancers = Object.values(
+      template.findResources('AWS::ElasticLoadBalancingV2::LoadBalancer'),
+    );
+
+    expect(loadBalancers[0].Properties.LoadBalancerAttributes).toEqual(
+      expect.arrayContaining([
+        { Key: 'routing.http.xff_header_processing.mode', Value: 'preserve' },
+      ]),
+    );
+  });
+
+  test('allows a running task count because CloudFront always provides HTTPS', () => {
+    const template = createTemplate({ desiredCount: 2 });
+
+    template.hasResourceProperties('AWS::ECS::Service', { DesiredCount: 2 });
   });
 
   test('requires an explicit image tag and Supabase pooler hostname', () => {
@@ -196,24 +262,42 @@ describe('UniBudget infrastructure', () => {
     ).toThrow(/bare DNS hostname/);
   });
 
-  test('requires a custom HTTPS URL when a certificate is configured', () => {
+  test('requires the CloudFront origin-facing prefix list id', () => {
     expect(() =>
-      createTemplate({
-        certificateArn:
-          'arn:aws:acm:us-east-1:111111111111:certificate/11111111-1111-1111-1111-111111111111',
-      }),
-    ).toThrow(/applicationUrl is required/);
+      createTemplate({ cloudFrontOriginPrefixListId: undefined }),
+    ).toThrow(/cloudFrontOriginPrefixListId is required/);
+    expect(() =>
+      createTemplate({ cloudFrontOriginPrefixListId: 'https://cloudfront.net' }),
+    ).toThrow(/managed prefix list ID/);
   });
 
-  test('outputs the custom domain rather than claiming the ALB hostname is certified', () => {
-    const template = createTemplate({
-      certificateArn:
-        'arn:aws:acm:us-east-1:111111111111:certificate/11111111-1111-1111-1111-111111111111',
-      applicationUrl: 'https://budget.example.com',
-    });
-
+  test('derives the public URL from the CloudFront distribution output', () => {
+    const template = createTemplate();
     const outputs = template.findOutputs('*');
-    expect(outputs.ApplicationUrl?.Value).toBe('https://budget.example.com');
+
+    expect(outputs.ApplicationUrl?.Value).toEqual({
+      'Fn::Join': [
+        '',
+        [
+          'https://',
+          {
+            'Fn::GetAtt': [
+              expect.stringContaining('ApplicationDistribution'),
+              'DomainName',
+            ],
+          },
+        ],
+      ],
+    });
+    expect(outputs.CloudFrontDistributionId?.Value).toEqual({
+      Ref: expect.stringContaining('ApplicationDistribution'),
+    });
+    expect(outputs.CloudFrontDomainName?.Value).toEqual({
+      'Fn::GetAtt': [
+        expect.stringContaining('ApplicationDistribution'),
+        'DomainName',
+      ],
+    });
     expect(outputs.LoadBalancerDnsName?.Value).toBeDefined();
   });
 

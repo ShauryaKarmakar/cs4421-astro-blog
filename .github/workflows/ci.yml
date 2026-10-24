@@ -98,4 +98,5 @@ jobs:
           npx cdk synth --no-lookups
           -c imageTag=ci-synth
           -c supabaseHost=aws-0-eu-central-1.pooler.supabase.com
+          -c cloudFrontOriginPrefixListId=pl-0123456789abcdef0
         working-directory: hello-cdk

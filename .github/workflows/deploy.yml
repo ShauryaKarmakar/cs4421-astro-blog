@@ -16,6 +16,11 @@ on:
         required: true
         type: boolean
         default: false
+      recoveryPlanVerified:
+        description: Confirm a restorable Supabase backup or PITR restore point was verified for this migration
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -29,8 +34,6 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION }}
   AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
   AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-  APPLICATION_URL: ${{ vars.APPLICATION_URL }}
-  CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
   SUPABASE_HOST: ${{ vars.SUPABASE_HOST }}
   STACK_NAME: UniBudgetStack
   IMAGE_TAG: ${{ inputs.imageTag }}
@@ -48,7 +51,7 @@ jobs:
       - name: Validate Deployment Inputs
         run: |
           set -euo pipefail
-          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN APPLICATION_URL CERTIFICATE_ARN SUPABASE_HOST IMAGE_TAG DESIRED_COUNT; do
+          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN SUPABASE_HOST IMAGE_TAG DESIRED_COUNT; do
             if [ -z "${!name:-}" ]; then
               echo "::error::$name must be configured for this deployment."
               exit 1
@@ -70,20 +73,16 @@ jobs:
             echo "::error::desiredCount must be an explicit integer between 1 and 10. Use a separate stack deploy to scale down."
             exit 1
           fi
-          if ! [[ "$APPLICATION_URL" =~ ^https://[A-Za-z0-9.-]+/?$ ]]; then
-            echo "::error::APPLICATION_URL must be an HTTPS origin such as https://budget.example.com (no path)."
-            exit 1
-          fi
-          if ! [[ "$CERTIFICATE_ARN" =~ ^arn:aws[a-zA-Z-]*:acm:[a-z0-9-]+:[0-9]{12}:certificate/[0-9a-f-]+$ ]]; then
-            echo "::error::CERTIFICATE_ARN must be an ACM certificate ARN."
-            exit 1
-          fi
-          if ! [[ "$CERTIFICATE_ARN" == *":$AWS_REGION:"* ]]; then
-            echo "::error::CERTIFICATE_ARN must be in the ALB region ($AWS_REGION)."
-            exit 1
-          fi
           if ! [[ "$SUPABASE_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || [[ "$SUPABASE_HOST" == *..* ]]; then
             echo "::error::SUPABASE_HOST must be the bare pooler hostname copied from the Supabase dashboard."
+            exit 1
+          fi
+          # Hosted HTTPS comes from CloudFront's AWS-managed certificate, so no
+          # APPLICATION_URL or CERTIFICATE_ARN variable is required. A migration
+          # needs an explicit, human-confirmed recovery point because the
+          # migration runner is forward-only.
+          if [ "${{ inputs.bootstrapOnly }}" != "true" ] && [ "${{ inputs.recoveryPlanVerified }}" != "true" ]; then
+            echo "::error::Confirm a verified, restorable Supabase backup or PITR restore point before migrating."
             exit 1
           fi
 
@@ -94,7 +93,8 @@ jobs:
           role-session-name: unibudget-deploy
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Validate Certificate and Supabase Host
+      - name: Validate AWS Identity, CloudFront Origin Access, and Supabase Host
+        id: prerequisites
         run: |
           set -euo pipefail
           caller_account=$(aws sts get-caller-identity --query Account --output text)
@@ -102,48 +102,22 @@ jobs:
             echo "::error::The OIDC role is in account $caller_account, not AWS_ACCOUNT_ID ($AWS_ACCOUNT_ID)."
             exit 1
           fi
-          cert_status=$(aws acm describe-certificate \
-            --certificate-arn "$CERTIFICATE_ARN" \
-            --query 'Certificate.Status' \
-            --output text)
-          if [ "$cert_status" != "ISSUED" ]; then
-            echo "::error::The ACM certificate is $cert_status, not ISSUED. Validation must complete before deployment."
-            exit 1
-          fi
           if ! getent ahosts "$SUPABASE_HOST" >/dev/null; then
             echo "::error::SUPABASE_HOST does not resolve. Copy the current session-pooler host from the Supabase dashboard."
             exit 1
           fi
-          app_host=${APPLICATION_URL#https://}
-          app_host=${app_host%/}
-          if [ "${{ inputs.bootstrapOnly }}" != "true" ] && ! getent ahosts "$app_host" >/dev/null; then
-            echo "::error::APPLICATION_URL does not resolve. Point its DNS record at the ALB before deploying."
+          # The load balancer accepts traffic only from this AWS-managed prefix
+          # list, so CloudFront is the only public path to the application and
+          # the ALB is never reachable over plain HTTP from the internet.
+          origin_prefix_list=$(aws ec2 describe-managed-prefix-lists \
+            --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
+            --query 'PrefixLists[0].PrefixListId' \
+            --output text)
+          if [ -z "$origin_prefix_list" ] || [ "$origin_prefix_list" = "None" ] || ! [[ "$origin_prefix_list" =~ ^pl-[0-9a-f]+$ ]]; then
+            echo "::error::The CloudFront origin-facing managed prefix list is unavailable in $AWS_REGION; refusing to expose the ALB directly."
             exit 1
           fi
-          cert_domain=$(aws acm describe-certificate \
-            --certificate-arn "$CERTIFICATE_ARN" \
-            --query 'Certificate.DomainName' \
-            --output text)
-          cert_names=$(aws acm describe-certificate \
-            --certificate-arn "$CERTIFICATE_ARN" \
-            --query 'Certificate.SubjectAlternativeNames[]' \
-            --output text)
-          cert_match=false
-          for cert_name in $cert_domain $cert_names; do
-            if [ "$cert_name" = "$app_host" ]; then
-              cert_match=true
-            elif [[ "$cert_name" == \*.* ]]; then
-              suffix=${cert_name#\*.}
-              prefix=${app_host%".$suffix"}
-              if [ "$prefix" != "$app_host" ] && [ -n "$prefix" ] && [[ "$prefix" != *.* ]]; then
-                cert_match=true
-              fi
-            fi
-          done
-          if [ "$cert_match" != "true" ]; then
-            echo "::error::APPLICATION_URL's host is not covered by the ACM certificate."
-            exit 1
-          fi
+          echo "origin_prefix_list=$origin_prefix_list" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js Runtime
         uses: actions/setup-node@v4
@@ -185,18 +159,19 @@ jobs:
         env:
           UNIBUDGET_AWS_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
           UNIBUDGET_AWS_REGION: ${{ env.AWS_REGION }}
+          ORIGIN_PREFIX_LIST: ${{ steps.prerequisites.outputs.origin_prefix_list }}
         run: |
           set -euo pipefail
-          # The ECR repository and migration task definition must exist before
-          # the image is pushed or a migration is attempted. Desired count is
-          # hard-coded to zero until the migration succeeds.
+          # The ECR repository, migration task definition, load balancer, and
+          # CloudFront distribution must exist before the image is pushed or a
+          # migration is attempted. Desired count is hard-coded to zero until
+          # the migration succeeds.
           npx cdk deploy \
             --require-approval never \
             -c imageTag="$IMAGE_TAG" \
             -c desiredCount=0 \
-            -c certificateArn="$CERTIFICATE_ARN" \
-            -c applicationUrl="$APPLICATION_URL" \
-            -c supabaseHost="$SUPABASE_HOST"
+            -c supabaseHost="$SUPABASE_HOST" \
+            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST"
         working-directory: hello-cdk
 
       - name: Read Stack Outputs
@@ -219,8 +194,15 @@ jobs:
             printf '%s' "$value"
           }
           application_url=$(output_value ApplicationUrl)
-          if [ "${application_url%/}" != "${APPLICATION_URL%/}" ]; then
-            echo "::error::APPLICATION_URL (${APPLICATION_URL}) does not match the stack output (${application_url}). Use the custom domain attached to the ALB certificate."
+          cloudfront_domain=$(output_value CloudFrontDomainName)
+          # The public HTTPS URL is derived from the CloudFront distribution,
+          # never supplied by a repository variable or a DNS record.
+          if ! [[ "$cloudfront_domain" =~ ^[a-z0-9]+\.cloudfront\.net$ ]]; then
+            echo "::error::CloudFrontDomainName ($cloudfront_domain) is not an AWS-generated CloudFront hostname."
+            exit 1
+          fi
+          if [ "$application_url" != "https://$cloudfront_domain" ]; then
+            echo "::error::ApplicationUrl ($application_url) is not the HTTPS URL of $cloudfront_domain."
             exit 1
           fi
           {
@@ -239,45 +221,78 @@ jobs:
             echo "security_group=$(output_value ApplicationSecurityGroupId)"
             echo "subnets=$(output_value PublicSubnetIds)"
             echo "load_balancer_dns=$(output_value LoadBalancerDnsName)"
+            echo "cloudfront_distribution_id=$(output_value CloudFrontDistributionId)"
+            echo "cloudfront_domain_name=$cloudfront_domain"
+            echo "application_url=$application_url"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Verify Application DNS Target
+      - name: Verify CloudFront Delivery Configuration
         if: inputs.bootstrapOnly != true
         env:
+          DISTRIBUTION_ID: ${{ steps.outputs.outputs.cloudfront_distribution_id }}
+          CLOUDFRONT_DOMAIN: ${{ steps.outputs.outputs.cloudfront_domain_name }}
+          APPLICATION_URL: ${{ steps.outputs.outputs.application_url }}
           LOAD_BALANCER_DNS: ${{ steps.outputs.outputs.load_balancer_dns }}
         run: |
           set -euo pipefail
-          app_host=${APPLICATION_URL#https://}
-          app_host=${app_host%/}
-          if [ -z "$LOAD_BALANCER_DNS" ]; then
-            echo "::error::LoadBalancerDnsName stack output is empty."
+          if [ -z "$DISTRIBUTION_ID" ] || [ -z "$CLOUDFRONT_DOMAIN" ] || [ -z "$LOAD_BALANCER_DNS" ]; then
+            echo "::error::CloudFront or load balancer stack outputs are empty; refusing to migrate without a verified public HTTPS entry point."
             exit 1
           fi
-          if ! command -v getent >/dev/null 2>&1; then
-            echo "::error::getent is unavailable; cannot verify that $app_host targets the ALB."
+          if [ "$APPLICATION_URL" != "https://$CLOUDFRONT_DOMAIN" ]; then
+            echo "::error::ApplicationUrl is not the CloudFront HTTPS URL."
             exit 1
           fi
-          # Compare IPv4 answers so a CNAME or Route 53 alias to the ALB is
-          # accepted, but a proxy, CDN, stale record, or wrong ALB is rejected
-          # before the migration task is started.
-          app_ips=$(getent ahostsv4 "$app_host" | awk '{print $1}' | sort -u || true)
-          alb_ips=$(getent ahostsv4 "$LOAD_BALANCER_DNS" | awk '{print $1}' | sort -u || true)
-          if [ -z "$app_ips" ]; then
-            echo "::error::APPLICATION_URL host $app_host has no IPv4 address; refusing to migrate."
+          status=$(aws cloudfront get-distribution \
+            --id "$DISTRIBUTION_ID" \
+            --query 'Distribution.Status' \
+            --output text)
+          if [ "$status" != "Deployed" ]; then
+            echo "::error::CloudFront distribution $DISTRIBUTION_ID is $status, not Deployed."
             exit 1
           fi
-          if [ -z "$alb_ips" ]; then
-            echo "::error::$LOAD_BALANCER_DNS has no IPv4 address; refusing to migrate."
-            exit 1
-          fi
-          while IFS= read -r ip; do
-            [ -n "$ip" ] || continue
-            if ! grep -Fxq "$ip" <<<"$alb_ips"; then
-              echo "::error::$app_host resolves to $ip, which is not an address of $LOAD_BALANCER_DNS. Point the DNS record directly at the ALB; do not use a proxy or CDN."
+          config=$(aws cloudfront get-distribution-config \
+            --id "$DISTRIBUTION_ID" \
+            --query 'DistributionConfig' \
+            --output json)
+          require_config() {
+            local label=$1 actual=$2 expected=$3
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::CloudFront $label is '$actual', expected '$expected'."
               exit 1
             fi
-          done <<<"$app_ips"
-          echo "Application DNS target matches $LOAD_BALANCER_DNS."
+          }
+          require_config "enabled" "$(jq -r '.Enabled' <<<"$config")" "true"
+          require_config "custom domain count" "$(jq -r '(.Aliases.Items // []) | length' <<<"$config")" "0"
+          acm_certificate=$(jq -r '.ViewerCertificate.ACMCertificateArn // empty' <<<"$config")
+          if [ -n "$acm_certificate" ]; then
+            echo "::error::CloudFront uses ACM certificate $acm_certificate; this deployment must use the AWS-managed default certificate."
+            exit 1
+          fi
+          require_config "origin count" "$(jq -r '.Origins | length' <<<"$config")" "1"
+          require_config "origin" "$(jq -r '.Origins[0].DomainName' <<<"$config")" "$LOAD_BALANCER_DNS"
+          require_config "viewer protocol" "$(jq -r '.DefaultCacheBehavior.ViewerProtocolPolicy' <<<"$config")" "redirect-to-https"
+          # CachingDisabled: no user-specific HTML, session, or API response may
+          # be stored at the edge. AllViewer forwards every header (including
+          # Host), all cookies (the session cookie), and all query strings.
+          require_config "cache policy" "$(jq -r '.DefaultCacheBehavior.CachePolicyId' <<<"$config")" "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+          require_config "origin request policy" "$(jq -r '.DefaultCacheBehavior.OriginRequestPolicyId' <<<"$config")" "216adef6-5c7f-47e4-b989-5492eafa07d3"
+          methods=$(jq -r '.DefaultCacheBehavior.AllowedMethods | (.Items // []) | sort | join(",")' <<<"$config")
+          if [ "$methods" != "DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT" ]; then
+            echo "::error::CloudFront allowed methods are $methods; POST, PUT, PATCH, and DELETE must reach the application."
+            exit 1
+          fi
+          http_code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --retry 5 --retry-delay 3 --retry-connrefused \
+            "http://$CLOUDFRONT_DOMAIN/" || true)
+          case "$http_code" in
+            301|302|307|308) ;;
+            *)
+              echo "::error::http://$CLOUDFRONT_DOMAIN returned $http_code instead of redirecting to HTTPS."
+              exit 1
+              ;;
+          esac
+          echo "CloudFront serves https://$CLOUDFRONT_DOMAIN from $LOAD_BALANCER_DNS with caching disabled."
 
       - name: Build and Push Application Image
         if: inputs.bootstrapOnly != true
@@ -533,6 +548,7 @@ jobs:
         env:
           UNIBUDGET_AWS_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
           UNIBUDGET_AWS_REGION: ${{ env.AWS_REGION }}
+          ORIGIN_PREFIX_LIST: ${{ steps.prerequisites.outputs.origin_prefix_list }}
         run: |
           set -euo pipefail
           # Rollout happens only after the migration succeeded. desiredCount is
@@ -541,9 +557,8 @@ jobs:
             --require-approval never \
             -c imageTag="$IMAGE_TAG" \
             -c desiredCount="$DESIRED_COUNT" \
-            -c certificateArn="$CERTIFICATE_ARN" \
-            -c applicationUrl="$APPLICATION_URL" \
-            -c supabaseHost="$SUPABASE_HOST"
+            -c supabaseHost="$SUPABASE_HOST" \
+            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST"
         working-directory: hello-cdk
 
       - name: Wait for the ECS Service
@@ -587,16 +602,29 @@ jobs:
           fi
           echo "ECS service is running the expected image."
 
-      - name: Verify Application Health
+      - name: Verify Application Health Through CloudFront
         if: inputs.bootstrapOnly != true
+        env:
+          APPLICATION_URL: ${{ steps.outputs.outputs.application_url }}
         run: |
           set -euo pipefail
+          if [ -z "$APPLICATION_URL" ] || ! [[ "$APPLICATION_URL" =~ ^https://[a-z0-9]+\.cloudfront\.net$ ]]; then
+            echo "::error::The stack did not provide an HTTPS CloudFront application URL."
+            exit 1
+          fi
           health_url="${APPLICATION_URL%/}/api/health"
           response=$(curl --fail --silent --show-error \
             --retry 12 --retry-delay 5 --retry-connrefused \
             "$health_url")
           if ! jq -e '.status == "ok"' >/dev/null <<<"$response"; then
             echo "::error::Health endpoint returned an unexpected response."
+            exit 1
+          fi
+          login_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --retry 12 --retry-delay 5 --retry-connrefused \
+            "${APPLICATION_URL%/}/login")
+          if [ "$login_code" != "200" ]; then
+            echo "::error::The login page returned $login_code through CloudFront."
             exit 1
           fi
           echo "Application is healthy at $health_url"

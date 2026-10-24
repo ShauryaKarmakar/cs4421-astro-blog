@@ -13,8 +13,9 @@ if (Boolean(account) !== Boolean(region)) {
 
 const desiredCountContext = app.node.tryGetContext('desiredCount');
 const imageTagContext = app.node.tryGetContext('imageTag');
-const certificateArnContext = app.node.tryGetContext('certificateArn');
-const applicationUrlContext = app.node.tryGetContext('applicationUrl');
+const cloudFrontOriginPrefixListIdContext = app.node.tryGetContext(
+  'cloudFrontOriginPrefixListId',
+);
 const supabaseHostContext = app.node.tryGetContext('supabaseHost');
 const supabasePortContext = app.node.tryGetContext('supabasePort');
 const supabaseDatabaseContext = app.node.tryGetContext('supabaseDatabase');
@@ -25,14 +26,10 @@ new UniBudgetStack(app, 'UniBudgetStack', {
     desiredCountContext === undefined ? 0 : Number(desiredCountContext),
   imageTag:
     imageTagContext === undefined ? undefined : String(imageTagContext),
-  certificateArn:
-    certificateArnContext === undefined
+  cloudFrontOriginPrefixListId:
+    cloudFrontOriginPrefixListIdContext === undefined
       ? undefined
-      : String(certificateArnContext),
-  applicationUrl:
-    applicationUrlContext === undefined
-      ? undefined
-      : String(applicationUrlContext),
+      : String(cloudFrontOriginPrefixListIdContext),
   supabaseHost:
     supabaseHostContext === undefined
       ? undefined

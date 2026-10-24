@@ -8,10 +8,17 @@ CDK stack requires the exact host copied from the Supabase dashboard's Database
 Settings and rejects a scheme, port, path, or malformed hostname.
 
 The application runs as an Astro Node standalone server on ECS Fargate behind
-an Application Load Balancer, with images in ECR. Both the application and the
-one-off migration task run in public subnets with public IPs so they can reach
-Supabase without a NAT Gateway. Their security group accepts application
-traffic only from the load balancer.
+an Application Load Balancer, with images in ECR. The ALB is an HTTP origin
+that accepts traffic only from the AWS-managed CloudFront origin-facing prefix
+list. CloudFront terminates TLS on its AWS-generated `*.cloudfront.net`
+hostname with the AWS-managed certificate, so the deployment needs no custom
+domain, DNS record, or ACM certificate. Every viewer request is redirected to
+HTTPS, and nothing is cached at the edge because the same host renders
+per-user HTML and serves the login, session, and budget APIs.
+
+Both the application and the one-off migration task run in public subnets with
+public IPs so they can reach Supabase without a NAT Gateway. Their security
+group accepts application traffic only from the load balancer.
 
 The CDK app in `hello-cdk/` still defines the original encrypted RDS instance
 and its retained secrets. Those resources are deliberately left in place: they
@@ -168,69 +175,97 @@ health pool, is cached after the first success, and is retried after a failure,
 so a misconfigured `PGUSER` fails closed instead of hanging the request or
 running with elevated privileges.
 
-## HTTPS, the application URL, and DNS
+## HTTPS and the CloudFront distribution
 
-The ACM certificate covers a **custom domain**, not the ALB-generated DNS name.
-The stack therefore refuses a certificate without an explicit
-`applicationUrl`, refuses `desiredCount > 0` without a certificate, and outputs
-the custom URL rather than claiming `https://<alb-dns>` is certified.
+The public entry point is an Amazon CloudFront distribution in front of the
+load balancer. It uses the AWS-generated distribution hostname
+(`https://<distribution-id>.cloudfront.net`) and CloudFront's default trusted
+certificate, so this deployment deliberately has no custom domain, no DNS
+record to create, and no ACM certificate to validate.
 
-Prerequisites for the certificate and URL:
+The distribution is configured by the CDK stack, not by hand:
 
-1. The ACM certificate is in the **same region as the ALB**, not just any
-   region, and its status is `ISSUED`.
-2. The certificate's domain or a subject alternative name covers the
-   `applicationUrl` host. `applicationUrl` must be an HTTPS origin such as
-   `https://budget.example.com`, with no path.
-3. A DNS record for that host points at the stack's `LoadBalancerDnsName`
-   output. Use a CNAME for a subdomain, or the provider's alias/ANAME mechanism
-   for an apex. Do not point it at an ECS task or IP address.
-4. Ports 80 and 443 reach the ALB. Port 80 redirects to HTTPS.
+- **Viewer protocol:** every request is redirected to HTTPS
+  (`redirect-to-https`). The ALB has no certificate and no HTTPS listener.
+- **Origin:** the ALB DNS name over HTTP. The ALB security group accepts port
+  80 **only** from the `com.amazonaws.global.cloudfront.origin-facing` managed
+  prefix list, so plain HTTP cannot reach the application directly. The
+  workflow looks up the regional prefix list ID and passes it to the stack.
+  The prefix list admits CloudFront origin-facing servers generally, not only
+  this distribution; the ALB DNS name is not published, and a secret origin
+  header with an ALB listener rule can add per-distribution isolation if
+  required.
+- **Caching:** `CachingDisabled` for the whole distribution. Astro renders
+  per-user HTML, and the same host serves `/api/auth/*`, `/api/budgets`,
+  `/api/transactions`, and `/api/health`; no response may be stored or shared
+  between viewers.
+- **Origin request policy:** `AllViewer`, which forwards every viewer header
+  (including `Host`), all cookies (the `session` cookie), and all query strings.
+  Astro therefore sees the CloudFront hostname and its relative redirects stay
+  on the public HTTPS origin.
+- **Methods:** `GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE`, because the API
+  uses POST, PATCH, PUT, and DELETE.
+- **Cookies:** the application sets `HttpOnly; SameSite=Strict; Path=/` and
+  adds `Secure` when `NODE_ENV=production` (the ECS task sets it). The cookie is
+  host-only for the CloudFront hostname, so it is never sent over plain HTTP and
+  never shared with another origin.
+- **Client IPs:** CloudFront appends the viewer IP to `X-Forwarded-For`, and
+  the ALB is set to `preserve` that header instead of appending the CloudFront
+  edge IP, so the application's rightmost-entry parsing and per-client rate
+  limiting keep working.
 
-The deployment workflow checks that the certificate is `ISSUED`, belongs to the
-ALB region, and covers the application host, and that the Supabase pooler host
-resolves. On a normal deployment it also reads `LoadBalancerDnsName` and
-resolves both the application host and the ALB DNS name over IPv4. Every IPv4
-address returned for the application host must also be returned for the ALB. A
-missing address, an unresolvable name, or any address that is not an ALB
-address fails **before** the image is built or the migration task starts. This
-accepts a CNAME or Route 53 alias directly to the ALB and rejects a proxy, CDN,
-stale record, or the wrong ALB. It cannot create or repair your DNS record, and
-it deliberately requires IPv4 because the internet-facing ALB is IPv4. Verify
-the `LoadBalancerDnsName` target before deploying traffic.
+CSRF protection relies on `SameSite=Strict` and the single-origin deployment:
+there is no CORS allowance, the browser does not attach the session cookie to
+cross-site requests, and authentication redirects are relative paths, so the
+viewer stays on the CloudFront HTTPS origin. The deployment workflow verifies
+that the distribution is `Deployed`, points at the stack's ALB, redirects HTTP
+to HTTPS, disables caching, forwards all headers and cookies, and allows all
+required methods **before** the image is built or the migration starts.
+
+CloudFront applies its default viewer security policy to the AWS-managed
+certificate. If a specific minimum TLS version (for example TLS 1.2) is a hard
+requirement, attach a custom domain and an ACM certificate; that is a separate
+change from this deployment.
 
 ## First deployment
 
 Prerequisites:
 
 - an approved AWS account and region, with the CDK bootstrap stack deployed;
-- the repository environment `production` and its OIDC deploy role;
-- an issued ACM certificate and a DNS record for the application domain;
+- the repository environment `production` and its OIDC deploy role with the
+  EC2 and CloudFront permissions listed below;
+- no custom domain, DNS record, or ACM certificate (CloudFront supplies
+  HTTPS);
 - the three Supabase secrets populated **after** the bootstrap stack exists;
-- a restorable Supabase backup or PITR restore point;
-- approval to create the retained RDS instance, ALB, Fargate service, ECR
-  repository, and CloudWatch log group.
+- a restorable Supabase backup or PITR restore point, recorded before the
+  migration run;
+- approval to create the retained RDS instance, ALB, CloudFront distribution,
+  Fargate service, ECR repository, and CloudWatch log group.
 
 ### Option A: bootstrap through the workflow
 
 1. Run `.github/workflows/deploy.yml` with `bootstrapOnly=true`, a future
-   `imageTag`, a `desiredCount` of at least `1`, `APPLICATION_URL`,
-   `CERTIFICATE_ARN`, and `SUPABASE_HOST` configured. This creates the stack
+   `imageTag`, a `desiredCount` of at least `1`, `recoveryPlanVerified=false`
+   (no migration runs), and `SUPABASE_HOST` configured. This creates the stack
+   — including the ALB, the CloudFront distribution, and the ECR repository —
    with `desiredCount=0`; it does not build, migrate, or start the application.
 2. Populate the three Supabase secrets described above.
-3. Point the application DNS record directly at the `LoadBalancerDnsName`
-   stack output and wait for it to propagate. The next normal run checks that
-   every IPv4 address for the application host belongs to that ALB before it
-   builds the image or starts the migration.
-4. Run the workflow again with `bootstrapOnly=false` and the same `imageTag`.
-   It builds and pushes the image, validates both task definitions and the
-   migration task, runs the migration, and only then deploys the requested
-   running task count.
-5. Confirm the ALB target is healthy and `/api/health` returns 200.
+3. Read the `ApplicationUrl` and `CloudFrontDomainName` stack outputs. They are
+   `https://<distribution-id>.cloudfront.net`; do not invent or paste a
+   hostname, and do not create a DNS record.
+4. Run the workflow again with `bootstrapOnly=false`, the same `imageTag`, and
+   `recoveryPlanVerified=true` after confirming the restore point. It checks
+   the CloudFront delivery configuration, builds and pushes the image,
+   validates both task definitions and the migration task, runs the migration,
+   and only then deploys the requested running task count.
+5. Confirm the ALB target is healthy and that
+   `https://<distribution-id>.cloudfront.net/api/health` returns 200.
 6. Register a user, sign in, and verify that the session survives a request.
-   Confirm in Supabase that the application role is `unibudget_app` and that
-   `anon`, `authenticated`, and `service_role` have no privileges on the
-   UniBudget tables or `schema_migrations`.
+   Confirm in the browser that the cookie is `Secure; HttpOnly;
+   SameSite=Strict`, that every request stays on the CloudFront hostname, and —
+   in Supabase — that the application role is `unibudget_app` and that `anon`,
+   `authenticated`, and `service_role` have no privileges on the UniBudget
+   tables or `schema_migrations`.
 
 A normal deployment is refused while the stack does not exist, and
 `bootstrapOnly` is refused once it does.
@@ -243,12 +278,14 @@ A normal deployment is refused while the stack does not exist, and
 
    ```bash
    cd hello-cdk
+   prefix_list_id=$(aws ec2 describe-managed-prefix-lists \
+     --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
+     --query 'PrefixLists[0].PrefixListId' --output text)
    npx cdk deploy --require-approval never \
      -c imageTag="$IMAGE_TAG" \
      -c desiredCount=0 \
-     -c certificateArn="$CERTIFICATE_ARN" \
-     -c applicationUrl="$APPLICATION_URL" \
-     -c supabaseHost="$SUPABASE_HOST"
+     -c supabaseHost="$SUPABASE_HOST" \
+     -c cloudFrontOriginPrefixListId="$prefix_list_id"
    ```
 
 2. Populate the three Supabase secrets.
@@ -270,10 +307,10 @@ A normal deployment is refused while the stack does not exist, and
    Wait for the task to stop and require every container exit code to be `0`.
    Do not continue to a rollout if the migration fails. Run the migration a
    second time to confirm checksum/idempotency behavior.
-5. Deploy again with the same image tag, certificate, application URL,
-   pooler host, and the approved running count (for example `desiredCount=2`).
-6. Verify the ALB target and `/api/health`, then repeat the sign-in and
-   privilege checks from Option A.
+5. Deploy again with the same image tag, pooler host, prefix list ID, and the
+   approved running count (for example `desiredCount=2`).
+6. Verify the `ApplicationUrl` output, `/api/health`, and `/login` over HTTPS,
+   then repeat the sign-in and privilege checks from Option A.
 
 The migration task and the application share one image tag, but the migration
 must run before the service rollout. The workflow enforces that ordering.
@@ -290,14 +327,17 @@ Configure these repository or environment variables:
 - `AWS_DEPLOY_ROLE_ARN`
 - `AWS_REGION`
 - `AWS_ACCOUNT_ID`
-- `APPLICATION_URL`
-- `CERTIFICATE_ARN`
 - `SUPABASE_HOST`
+
+The CloudFront hostname and the origin-facing prefix list ID are not repository
+variables: the workflow reads the hostname from the stack outputs and looks up
+the regional prefix list at deployment time. There is no `APPLICATION_URL` or
+`CERTIFICATE_ARN` variable.
 
 The workflow reads the ECR repository URI, cluster, service, both task
 definitions, the task-role and execution-role ARNs, the three Supabase secret
-ARNs, subnets, security group, load balancer DNS name, and application URL from
-stack outputs. It no longer accepts a repository name, full URI, task
+ARNs, subnets, security group, load balancer DNS name, CloudFront distribution
+ID and domain, and the derived HTTPS application URL from stack outputs. It no longer accepts a repository name, full URI, task
 definition, cluster, service, subnet, or security-group variable that could
 drift from the deployed stack.
 
@@ -350,7 +390,8 @@ The GitHub deploy role needs these actions for the commands in
 | Service | Required actions | Scope |
 | --- | --- | --- |
 | STS | `GetCallerIdentity`; `AssumeRole` for the CDK bootstrap publishing roles | `*` for `GetCallerIdentity`; the CDK bootstrap roles for `AssumeRole` |
-| ACM | `DescribeCertificate` | The configured certificate ARN |
+| EC2 | `DescribeManagedPrefixLists` | The CloudFront origin-facing managed prefix list in the deployment region |
+| CloudFront | `CreateDistribution`, `GetDistribution`, `GetDistributionConfig`, `UpdateDistribution`, `DeleteDistribution`, `ListDistributions`, `TagResource`, `ListTagsForResource` | The `UniBudgetStack` distribution |
 | CloudFormation | `CreateStack`, `UpdateStack`, `DescribeStacks`, `DescribeStackEvents`, `DescribeStackResources`, `ListStackResources`, `GetTemplate`, `GetTemplateSummary`, `CreateChangeSet`, `DescribeChangeSet`, `ExecuteChangeSet`, `DeleteChangeSet` | The `UniBudgetStack` stack |
 | ECR | `GetAuthorizationToken` | `*` |
 | ECR | `DescribeImages`, `BatchCheckLayerAvailability`, `InitiateLayerUpload`, `UploadLayerPart`, `CompleteLayerUpload`, `PutImage` | The `UniBudgetStack` repository |
@@ -359,10 +400,18 @@ The GitHub deploy role needs these actions for the commands in
 | S3 / SSM | Read/write the CDK bootstrap bucket and read its version parameter | The CDK bootstrap resources |
 
 `ecs:DescribeTaskDefinition` is required by the workflow's validation of **both**
-task definitions; it is not optional. The workflow does not call Secrets
-Manager at all: the secret ARNs are copied from stack outputs and compared to
-the task definitions. Secret **values** are read only by the ECS execution
-roles when a task starts.
+task definitions; it is not optional. `ec2:DescribeManagedPrefixLists` is
+required because the workflow resolves the CloudFront origin-facing prefix list
+and passes its ID to the stack. `cloudfront:GetDistribution` and
+`cloudfront:GetDistributionConfig` read the deployed distribution back, and
+`cloudfront:CreateDistribution` / `cloudfront:UpdateDistribution` are exercised
+by CDK when the stack creates or changes it. The default CDK bootstrap
+CloudFormation execution role already has broad permissions; a custom execution
+role needs the CloudFront and EC2 actions as well.
+
+The workflow does not call Secrets Manager at all: the secret ARNs are copied
+from stack outputs and compared to the task definitions. Secret **values** are
+read only by the ECS execution roles when a task starts.
 
 The GitHub deploy role's `iam:PassRole` is limited to the roles it passes
 directly:
@@ -480,8 +529,11 @@ boundary.
 
 For an existing stack the workflow:
 
-1. resolves the application host and `LoadBalancerDnsName` and requires every
-   application IPv4 address to belong to the ALB, before building or migrating;
+1. reads `ApplicationUrl`, `CloudFrontDomainName`, and `CloudFrontDistributionId`
+   from the stack outputs and verifies that the distribution is `Deployed`,
+   serves this stack's ALB, redirects HTTP to HTTPS, uses `CachingDisabled`,
+   forwards all headers and cookies, allows the required methods, and is not
+   attached to a custom domain, before building or migrating;
 2. builds and pushes a new immutable tag (it refuses to overwrite an existing
    tag);
 3. reads both task definitions and the exact role and secret ARNs from stack
@@ -493,12 +545,16 @@ For an existing stack the workflow:
 6. runs the migration task with an explicit image override and stops it if the
    job is cancelled or exceeds 30 minutes;
 7. deploys the stack only after migration exit code `0`;
-8. waits for ECS service stability and then verifies `/api/health`.
+8. waits for ECS service stability, verifies that the service is running the
+   image this workflow built, and checks `/api/health` and `/login` through the
+   CloudFront HTTPS URL.
 
 The workflow requires an explicit `desiredCount` between `1` and `10`; it has
-no default and never silently scales the service to zero. To intentionally
-stop the service, deploy the stack separately with `desiredCount=0` during an
-approved maintenance window.
+no default and never silently scales the service to zero. A non-bootstrap run
+also requires `recoveryPlanVerified=true`, the explicit confirmation that a
+restorable Supabase backup or PITR restore point exists; the run refuses to
+migrate without it. To intentionally stop the service, deploy the stack
+separately with `desiredCount=0` during an approved maintenance window.
 
 If the pooler host or secret references in the stack differ from what the
 workflow expects, validation fails **before** the migration. Do not bypass the
@@ -514,7 +570,9 @@ confirm the new pooler host and credentials in a disposable environment first.
 
 A stack created before this revision may be running, may have an outdated
 `ApplicationUrl`, and may lack the task-role, execution-role, and secret-ARN
-outputs that the workflow now validates. `bootstrapOnly=true` cannot repair it
+outputs that the workflow now validates. This revision also adds the CloudFront
+distribution and the prefix-list-only ALB ingress, and removes the ACM
+certificate and custom-domain inputs. `bootstrapOnly=true` cannot repair it
 because the stack already exists. Perform this one-time upgrade with
 `desiredCount=0` in a maintenance window. It updates CloudFormation only; it
 does not deploy an image, run a migration, or touch the separate static
@@ -543,7 +601,8 @@ S3/CloudFront site.
    cd hello-cdk
    npx cdk ls \
      -c imageTag="example-image-tag" \
-     -c supabaseHost="aws-0-example-1.pooler.supabase.com"
+     -c supabaseHost="aws-0-example-1.pooler.supabase.com" \
+     -c cloudFrontOriginPrefixListId="pl-0123456789abcdef0"
    ```
 
    `supabaseHost` is the Supabase session-pooler hostname copied from the
@@ -553,32 +612,35 @@ S3/CloudFront site.
    site.
 
 3. Synthesize and review the proposed change before deploying. Use the image
-   tag the next workflow will build and the URL, certificate, and pooler host
-   that will be used after the upgrade. `desiredCount=0` keeps the application
+   tag the next workflow will build, the pooler host, and the region's
+   CloudFront origin-facing prefix list. `desiredCount=0` keeps the application
    stopped during the maintenance window.
 
    ```bash
+   prefix_list_id=$(aws ec2 describe-managed-prefix-lists \
+     --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
+     --query 'PrefixLists[0].PrefixListId' --output text)
    npx cdk synth UniBudgetStack \
      -c imageTag="$IMAGE_TAG" \
      -c desiredCount=0 \
-     -c certificateArn="$CERTIFICATE_ARN" \
-     -c applicationUrl="$APPLICATION_URL" \
-     -c supabaseHost="$SUPABASE_HOST"
+     -c supabaseHost="$SUPABASE_HOST" \
+     -c cloudFrontOriginPrefixListId="$prefix_list_id"
    npx cdk diff UniBudgetStack \
      -c imageTag="$IMAGE_TAG" \
      -c desiredCount=0 \
-     -c certificateArn="$CERTIFICATE_ARN" \
-     -c applicationUrl="$APPLICATION_URL" \
-     -c supabaseHost="$SUPABASE_HOST"
+     -c supabaseHost="$SUPABASE_HOST" \
+     -c cloudFrontOriginPrefixListId="$prefix_list_id"
    ```
 
    Inspect `hello-cdk/cdk.out/UniBudgetStack.template.json` and the diff. The
-   diff must show only the intended outputs, task definitions, and roles. It
-   must not show an update or replacement of `AWS::RDS::DBInstance`, and it must
-   not show `AWS::S3::Bucket` or `AWS::CloudFront::Distribution`. If it does,
-   stop and review the stack/context before doing anything else. `cdk diff` is
-   read-only; do not use `cdk deploy` until the RDS and static-site scope is
-   confirmed.
+   diff may show this stack's own `AWS::CloudFront::Distribution`, the ALB
+   `routing.http.xff_header_processing.mode` attribute, the new CloudFront
+   outputs, and the intended task-definition/role changes. It must not show an
+   update or replacement of `AWS::RDS::DBInstance` and must not show
+   `AWS::S3::Bucket` or any resource from a separate static-site stack. If it
+   does, stop and review the stack/context before doing anything else.
+   `cdk diff` is read-only; do not use `cdk deploy` until the RDS and
+   static-site scope is confirmed.
 
 4. Apply the one-time stack update. This is a maintenance action: it stops the
    application while the output/role/task-definition changes are applied.
@@ -587,9 +649,8 @@ S3/CloudFront site.
    npx cdk deploy UniBudgetStack --require-approval never \
      -c imageTag="$IMAGE_TAG" \
      -c desiredCount=0 \
-     -c certificateArn="$CERTIFICATE_ARN" \
-     -c applicationUrl="$APPLICATION_URL" \
-     -c supabaseHost="$SUPABASE_HOST"
+     -c supabaseHost="$SUPABASE_HOST" \
+     -c cloudFrontOriginPrefixListId="$prefix_list_id"
    ```
 
    Do not use `bootstrapOnly`; it is refused for an existing stack. Do not run
@@ -608,13 +669,17 @@ S3/CloudFront site.
 
    Require `ApplicationTaskRoleArn`, `ApplicationTaskExecutionRoleArn`,
    `MigrationTaskRoleArn`, `MigrationTaskExecutionRoleArn`,
-   `SupabaseApplicationSecretArn`, `SupabaseMigrationSecretArn`, and
-   `SupabaseCaSecretArn` to be present. These are ARNs, not secret values.
+   `SupabaseApplicationSecretArn`, `SupabaseMigrationSecretArn`,
+   `SupabaseCaSecretArn`, `ApplicationUrl`, `CloudFrontDistributionId`, and
+   `CloudFrontDomainName` to be present. These are ARNs and a hostname, not
+   secret values.
 
-6. If `ApplicationUrl` changed, update DNS and wait for propagation before the
-   next normal run. Run the normal workflow with the same image tag and the
-   approved `desiredCount` (1-10). It will build and push, verify the DNS target
-   and exact roles/secrets before migration, migrate, and then roll out.
+6. `ApplicationUrl` is now the CloudFront HTTPS origin; no DNS record is
+   created or updated. Run the normal workflow with the same image tag, the
+   approved `desiredCount` (1-10), and `recoveryPlanVerified=true`. It will
+   verify the CloudFront delivery configuration, build and push, verify the
+   exact roles/secrets before migration, migrate, roll out, and check
+   `/api/health` through CloudFront.
 
 The upgrade must not create, replace, or delete the RDS instance, its data, or
 the separate static S3/CloudFront deployment. If the diff or CloudFormation
@@ -770,8 +835,8 @@ log group continue to incur charges after the Supabase cutover. Do not remove
 RDS from the stack until a snapshot has been verified and the retention and
 billing decision is approved.
 
-Other recurring charges include the ALB, Fargate tasks, public IPv4 addresses,
-ECR storage and scanning, CloudWatch log ingestion, ACM (no charge for public
-certificates used with AWS services), Secrets Manager, and data transfer to
-Supabase. The RDS instance is the largest avoidable cost and remains a risk
+Other recurring charges include the ALB, CloudFront requests and data transfer,
+Fargate tasks, public IPv4 addresses, ECR storage and scanning, CloudWatch log
+ingestion, and Secrets Manager. There is no ACM charge because this deployment
+uses CloudFront's AWS-managed certificate. The RDS instance is the largest avoidable cost and remains a risk
 until it is deliberately decommissioned.
