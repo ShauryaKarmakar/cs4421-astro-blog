@@ -1,4 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
@@ -9,10 +11,42 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { Construct } from 'constructs';
 
+function createEmptySecret(
+  scope: Construct,
+  id: string,
+  secretName: string,
+  description: string,
+): secretsmanager.Secret {
+  const secret = new secretsmanager.Secret(scope, id, {
+    secretName,
+    description,
+    removalPolicy: cdk.RemovalPolicy.RETAIN,
+  });
+  // The L2 construct defaults to generating a placeholder value. Remove it so
+  // CloudFormation creates an empty secret that is populated out of band; no
+  // placeholder credentials are created.
+  const cfnSecret = secret.node.defaultChild as secretsmanager.CfnSecret;
+  cfnSecret.generateSecretString = undefined;
+  return secret;
+}
+
 export interface UniBudgetStackProps extends cdk.StackProps {
-  certificateArn?: string;
   desiredCount?: number;
   imageTag?: string;
+  supabaseHost?: string;
+  supabasePort?: string;
+  supabaseDatabase?: string;
+  cloudFrontOriginPrefixListId?: string;
+}
+
+function isValidDnsHostname(value: string): boolean {
+  if (value.length > 253 || value.endsWith('.')) {
+    return false;
+  }
+  const labels = value.split('.');
+  return labels.every((label) =>
+    /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(label),
+  );
 }
 
 export class UniBudgetStack extends cdk.Stack {
@@ -20,12 +54,57 @@ export class UniBudgetStack extends cdk.Stack {
     super(scope, id, props);
 
     const desiredCount = props.desiredCount ?? 0;
-    const imageTag = props.imageTag ?? 'bootstrap';
+    const imageTag = props.imageTag?.trim();
     if (!Number.isInteger(desiredCount) || desiredCount < 0) {
       throw new Error('desiredCount must be a non-negative integer.');
     }
+    if (!imageTag) {
+      throw new Error(
+        'imageTag is required; both task definitions must reference an image tag that will be pushed.',
+      );
+    }
     if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(imageTag)) {
       throw new Error('imageTag must be a valid container image tag.');
+    }
+    // Never default the pooler hostname. Supabase has regional and
+    // project-specific pooler hosts, and a stale default silently connects to
+    // the wrong tenant (or not at all). Require the exact host copied from the
+    // project's Database Settings.
+    const supabaseHost = props.supabaseHost?.trim();
+    const supabasePort = props.supabasePort ?? '5432';
+    const supabaseDatabase = props.supabaseDatabase?.trim() ?? 'postgres';
+    if (!supabaseHost) {
+      throw new Error(
+        'supabaseHost is required. Copy the session-pooler host from the Supabase dashboard Database Settings.',
+      );
+    }
+    if (!isValidDnsHostname(supabaseHost)) {
+      throw new Error(
+        'supabaseHost must be a bare DNS hostname copied from the Supabase dashboard (no scheme, port, or path).',
+      );
+    }
+    if (!supabaseDatabase) {
+      throw new Error('supabaseDatabase must be set for the Supabase connection.');
+    }
+    if (!/^[0-9]{1,5}$/.test(supabasePort) || Number(supabasePort) < 1 || Number(supabasePort) > 65535) {
+      throw new Error('supabasePort must be a numeric PostgreSQL port between 1 and 65535.');
+    }
+
+    // HTTPS is terminated by CloudFront with its default *.cloudfront.net
+    // certificate, so no custom domain or ACM certificate is required. The
+    // ALB itself stays on HTTP and accepts connections only from the
+    // AWS-managed CloudFront origin-facing prefix list: that rule is what keeps
+    // authenticated traffic from bypassing HTTPS by reaching the ALB directly.
+    const cloudFrontOriginPrefixListId = props.cloudFrontOriginPrefixListId?.trim();
+    if (!cloudFrontOriginPrefixListId) {
+      throw new Error(
+        'cloudFrontOriginPrefixListId is required: the ALB accepts traffic only from the CloudFront origin-facing prefix list.',
+      );
+    }
+    if (!/^pl-[0-9a-f]{8,32}$/.test(cloudFrontOriginPrefixListId)) {
+      throw new Error(
+        'cloudFrontOriginPrefixListId must be an EC2 managed prefix list ID such as pl-0123456789abcdef0.',
+      );
     }
 
     const vpc = new ec2.Vpc(this, 'ApplicationVpc', {
@@ -103,6 +182,30 @@ export class UniBudgetStack extends cdk.Stack {
       },
     );
 
+    // Supabase credentials are populated out of band after the first
+    // deployment. The application secret holds { username, password } where the
+    // username includes the pooler project ref; the migration secret holds the
+    // postgres administrator username and password. The CA secret holds the PEM
+    // certificate downloaded from the project's Database Settings.
+    const supabaseApplicationSecret = createEmptySecret(
+      this,
+      'SupabaseApplicationCredentials',
+      'unibudget/supabase/application',
+      'JSON with the unibudget_app pooler username and password for Supabase.',
+    );
+    const supabaseMigrationSecret = createEmptySecret(
+      this,
+      'SupabaseMigrationCredentials',
+      'unibudget/supabase/migration',
+      'JSON with the Supabase postgres administrator username and password.',
+    );
+    const supabaseCaSecret = createEmptySecret(
+      this,
+      'SupabaseCaCertificate',
+      'unibudget/supabase/ca',
+      'PEM CA certificate downloaded from the Supabase project database settings.',
+    );
+
     const repository = new ecr.Repository(this, 'ApplicationRepository', {
       imageTagMutability: ecr.TagMutability.IMMUTABLE,
       imageScanOnPush: true,
@@ -149,7 +252,8 @@ export class UniBudgetStack extends cdk.Stack {
       },
     );
     repository.grantPull(applicationExecutionRole);
-    applicationDatabaseSecret.grantRead(applicationExecutionRole);
+    supabaseApplicationSecret.grantRead(applicationExecutionRole);
+    supabaseCaSecret.grantRead(applicationExecutionRole);
     logGroup.grantWrite(applicationExecutionRole);
 
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'ApplicationTask', {
@@ -163,15 +267,21 @@ export class UniBudgetStack extends cdk.Stack {
         NODE_ENV: 'production',
         HOST: '0.0.0.0',
         PORT: '8080',
-        PGHOST: database.dbInstanceEndpointAddress,
-        PGPORT: database.dbInstanceEndpointPort,
-        PGDATABASE: 'unibudget',
+        PGHOST: supabaseHost,
+        PGPORT: supabasePort,
+        PGDATABASE: supabaseDatabase,
         PGSSLMODE: 'verify-full',
-        PGSSLROOTCERT: '/etc/ssl/certs/rds-global-bundle.pem',
       },
       secrets: {
-        PGUSER: ecs.Secret.fromSecretsManager(applicationDatabaseSecret, 'username'),
-        PGPASSWORD: ecs.Secret.fromSecretsManager(applicationDatabaseSecret, 'password'),
+        PGUSER: ecs.Secret.fromSecretsManager(
+          supabaseApplicationSecret,
+          'username',
+        ),
+        PGPASSWORD: ecs.Secret.fromSecretsManager(
+          supabaseApplicationSecret,
+          'password',
+        ),
+        SUPABASE_CA_CERT: ecs.Secret.fromSecretsManager(supabaseCaSecret),
       },
       logging: ecs.LogDrivers.awsLogs({
         logGroup,
@@ -182,7 +292,7 @@ export class UniBudgetStack extends cdk.Stack {
           'CMD',
           'node',
           '-e',
-          "fetch('http://127.0.0.1:8080/login').then((response) => process.exit(response.status < 500 ? 0 : 1)).catch(() => process.exit(1))",
+          "fetch('http://127.0.0.1:8080/api/health').then((response) => process.exit(response.status === 200 ? 0 : 1)).catch(() => process.exit(1))",
         ],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
@@ -203,8 +313,9 @@ export class UniBudgetStack extends cdk.Stack {
       },
     );
     repository.grantPull(migrationExecutionRole);
-    databaseAdminSecret.grantRead(migrationExecutionRole);
-    applicationDatabaseSecret.grantRead(migrationExecutionRole);
+    supabaseMigrationSecret.grantRead(migrationExecutionRole);
+    supabaseApplicationSecret.grantRead(migrationExecutionRole);
+    supabaseCaSecret.grantRead(migrationExecutionRole);
     logGroup.grantWrite(migrationExecutionRole);
 
     const migrationTaskDefinition = new ecs.FargateTaskDefinition(
@@ -221,25 +332,25 @@ export class UniBudgetStack extends cdk.Stack {
       command: ['node', './scripts/migrate.mjs'],
       environment: {
         NODE_ENV: 'production',
-        MIGRATION_PGHOST: database.dbInstanceEndpointAddress,
-        MIGRATION_PGPORT: database.dbInstanceEndpointPort,
-        MIGRATION_PGDATABASE: 'unibudget',
-        MIGRATION_PGSSLMODE: 'verify-full',
-        MIGRATION_PGSSLROOTCERT: '/etc/ssl/certs/rds-global-bundle.pem',
+        PGHOST: supabaseHost,
+        PGPORT: supabasePort,
+        PGDATABASE: supabaseDatabase,
+        PGSSLMODE: 'verify-full',
       },
       secrets: {
-        MIGRATION_PGUSER: ecs.Secret.fromSecretsManager(
-          databaseAdminSecret,
+        PGUSER: ecs.Secret.fromSecretsManager(
+          supabaseMigrationSecret,
           'username',
         ),
-        MIGRATION_PGPASSWORD: ecs.Secret.fromSecretsManager(
-          databaseAdminSecret,
+        PGPASSWORD: ecs.Secret.fromSecretsManager(
+          supabaseMigrationSecret,
           'password',
         ),
         APP_DATABASE_PASSWORD: ecs.Secret.fromSecretsManager(
-          applicationDatabaseSecret,
+          supabaseApplicationSecret,
           'password',
         ),
+        SUPABASE_CA_CERT: ecs.Secret.fromSecretsManager(supabaseCaSecret),
       },
       logging: ecs.LogDrivers.awsLogs({
         logGroup,
@@ -253,6 +364,11 @@ export class UniBudgetStack extends cdk.Stack {
       internetFacing: true,
       securityGroup: loadBalancerSecurityGroup,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      // CloudFront appends the viewer IP to X-Forwarded-For and the ALB would
+      // normally append the CloudFront edge IP after it. Preserving the header
+      // keeps the viewer IP last, which is what src/lib/rateLimiter.ts trusts,
+      // so authentication rate limits stay per user instead of per edge.
+      xffHeaderProcessingMode: elbv2.XffHeaderProcessingMode.PRESERVE,
     });
     const targetGroup = new elbv2.ApplicationTargetGroup(this, 'ApplicationTargets', {
       vpc,
@@ -260,8 +376,8 @@ export class UniBudgetStack extends cdk.Stack {
       protocol: elbv2.ApplicationProtocol.HTTP,
       targetType: elbv2.TargetType.IP,
       healthCheck: {
-        path: '/login',
-        healthyHttpCodes: '200-399',
+        path: '/api/health',
+        healthyHttpCodes: '200',
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
         healthyThresholdCount: 2,
@@ -288,50 +404,90 @@ export class UniBudgetStack extends cdk.Stack {
       'Application requests from the load balancer.',
     );
 
-    if (props.certificateArn) {
-      loadBalancerSecurityGroup.addIngressRule(
-        ec2.Peer.anyIpv4(),
-        ec2.Port.tcp(443),
-        'HTTPS from the internet.',
-      );
-      loadBalancer.addListener('HttpListener', {
-        port: 80,
-        open: false,
-        defaultAction: elbv2.ListenerAction.redirect({
-          protocol: 'HTTPS',
-          port: '443',
-          permanent: true,
-        }),
-      });
-      loadBalancer.addListener('HttpsListener', {
-        port: 443,
-        open: false,
-        certificates: [
-          elbv2.ListenerCertificate.fromArn(props.certificateArn),
-        ],
-        defaultTargetGroups: [targetGroup],
-      });
-    } else {
-      loadBalancerSecurityGroup.addIngressRule(
-        ec2.Peer.anyIpv4(),
-        ec2.Port.tcp(80),
-        'HTTP from the internet for a demonstration deployment.',
-      );
-      loadBalancer.addListener('HttpListener', {
-        port: 80,
-        open: false,
-        defaultTargetGroups: [targetGroup],
-      });
-    }
+    // No 0.0.0.0/0 rule: the ALB is reachable only from CloudFront's
+    // origin-facing servers, so plain HTTP cannot be used to bypass the HTTPS
+    // endpoint and submit credentials or session cookies directly.
+    loadBalancerSecurityGroup.addIngressRule(
+      ec2.Peer.prefixList(cloudFrontOriginPrefixListId),
+      ec2.Port.tcp(80),
+      'HTTP from the CloudFront origin-facing prefix list only.',
+    );
+    loadBalancer.addListener('HttpListener', {
+      port: 80,
+      open: false,
+      defaultTargetGroups: [targetGroup],
+    });
 
+    // CloudFront terminates TLS with its AWS-managed certificate on the
+    // generated *.cloudfront.net hostname, so no certificate, DNS record, or
+    // custom domain is needed. Every viewer request is redirected to HTTPS.
+    // Caching is disabled for the whole distribution: Astro renders per-user
+    // HTML and the same host serves login, session, and budget APIs, so no
+    // response may be shared between viewers. AllViewer forwards every viewer
+    // header (including Host), all cookies (the session cookie), and all query
+    // strings, and all HTTP methods are allowed for the API routes.
+    const distribution = new cloudfront.Distribution(this, 'ApplicationDistribution', {
+      comment: 'UniBudget SSR delivery through the AWS-generated CloudFront hostname.',
+      enabled: true,
+      httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
+      defaultBehavior: {
+        origin: new origins.HttpOrigin(loadBalancer.loadBalancerDnsName, {
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+          connectionAttempts: 3,
+          readTimeout: cdk.Duration.seconds(30),
+        }),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
+        compress: true,
+      },
+    });
+
+    // The public URL is derived from the distribution, never supplied by hand.
     new cdk.CfnOutput(this, 'ApplicationUrl', {
-      value: `${props.certificateArn ? 'https' : 'http'}://${loadBalancer.loadBalancerDnsName}`,
+      value: `https://${distribution.distributionDomainName}`,
+      description:
+        'Public HTTPS origin on the AWS-generated CloudFront hostname; no custom domain is required.',
+    });
+    new cdk.CfnOutput(this, 'CloudFrontDistributionId', {
+      value: distribution.distributionId,
+    });
+    new cdk.CfnOutput(this, 'CloudFrontDomainName', {
+      value: distribution.distributionDomainName,
+    });
+    new cdk.CfnOutput(this, 'LoadBalancerDnsName', {
+      value: loadBalancer.loadBalancerDnsName,
+      description:
+        'CloudFront origin only. The load balancer security group rejects traffic that is not from CloudFront.',
     });
     new cdk.CfnOutput(this, 'ImageRepositoryUri', { value: repository.repositoryUri });
     new cdk.CfnOutput(this, 'ClusterName', { value: cluster.clusterName });
+    new cdk.CfnOutput(this, 'ServiceName', { value: service.serviceName });
     new cdk.CfnOutput(this, 'TaskDefinitionArn', { value: taskDefinition.taskDefinitionArn });
+    new cdk.CfnOutput(this, 'ApplicationTaskRoleArn', {
+      value: taskDefinition.taskRole.roleArn,
+    });
+    new cdk.CfnOutput(this, 'ApplicationTaskExecutionRoleArn', {
+      value: applicationExecutionRole.roleArn,
+    });
     new cdk.CfnOutput(this, 'MigrationTaskDefinitionArn', {
       value: migrationTaskDefinition.taskDefinitionArn,
+    });
+    new cdk.CfnOutput(this, 'MigrationTaskRoleArn', {
+      value: migrationTaskDefinition.taskRole.roleArn,
+    });
+    new cdk.CfnOutput(this, 'MigrationTaskExecutionRoleArn', {
+      value: migrationExecutionRole.roleArn,
+    });
+    new cdk.CfnOutput(this, 'SupabaseApplicationSecretArn', {
+      value: supabaseApplicationSecret.secretArn,
+    });
+    new cdk.CfnOutput(this, 'SupabaseMigrationSecretArn', {
+      value: supabaseMigrationSecret.secretArn,
+    });
+    new cdk.CfnOutput(this, 'SupabaseCaSecretArn', {
+      value: supabaseCaSecret.secretArn,
     });
     new cdk.CfnOutput(this, 'ApplicationSecurityGroupId', {
       value: applicationSecurityGroup.securityGroupId,
@@ -341,6 +497,11 @@ export class UniBudgetStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'DatabaseEndpoint', {
       value: database.dbInstanceEndpointAddress,
+    });
+    new cdk.CfnOutput(this, 'RetainedApplicationDatabaseSecretArn', {
+      value: applicationDatabaseSecret.secretArn,
+      description:
+        'Retained RDS-era application secret; the Supabase tasks do not read it.',
     });
   }
 }

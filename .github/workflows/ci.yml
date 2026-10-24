@@ -28,6 +28,7 @@ jobs:
           --health-retries 10
     env:
       BUDGET_TEST_DATABASE_URL: postgresql://unibudget_test_admin:integration-only-password@127.0.0.1:5432/unibudget_test
+      MIGRATION_TEST_DATABASE_URL: postgresql://unibudget_test_admin:integration-only-password@127.0.0.1:5432/unibudget_test
 
     steps:
       - name: Checkout Source Code
@@ -64,6 +65,26 @@ jobs:
       - name: Build Docker Image
         run: docker build -f dockerfile -t unibudget:ssr .
 
+      - name: Verify Migration Runtime Modules
+        run: |
+          set +e
+          output=$(docker run --rm --entrypoint node unibudget:ssr ./scripts/migrate.mjs 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::Expected the migration runner to stop on missing configuration."
+            exit 1
+          fi
+          if printf '%s' "$output" | grep -q 'ERR_MODULE_NOT_FOUND'; then
+            echo "::error::The migration runner could not resolve its modules in the runtime image."
+            exit 1
+          fi
+          if ! printf '%s' "$output" | grep -q 'APP_DATABASE_PASSWORD is required'; then
+            echo "::error::Unexpected migration failure; expected the missing APP_DATABASE_PASSWORD error."
+            exit 1
+          fi
+
       - name: Build CDK
         run: npm run build
         working-directory: hello-cdk
@@ -73,5 +94,9 @@ jobs:
         working-directory: hello-cdk
 
       - name: Synthesize CDK
-        run: npx cdk synth --no-lookups
+        run: >-
+          npx cdk synth --no-lookups
+          -c imageTag=ci-synth
+          -c supabaseHost=aws-0-eu-central-1.pooler.supabase.com
+          -c cloudFrontOriginPrefixListId=pl-0123456789abcdef0
         working-directory: hello-cdk

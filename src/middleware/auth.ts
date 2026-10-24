@@ -1,10 +1,31 @@
 // src/middleware/auth.ts
 import { defineMiddleware } from 'astro:middleware';
+import { assertApplicationRole } from '../lib/db';
 import { logServerError } from '../lib/serverLogger';
 import { getSessionCookie, validateSession } from '../lib/session';
 
 export const onRequest = defineMiddleware(async (context, next) => {
   const pathname = new URL(context.request.url).pathname;
+
+  // The health endpoint reports dependency health itself, so it must reach its
+  // handler even when the database is unreachable. The role gate below would
+  // otherwise replace the health payload with a generic 503.
+  if (pathname === '/api/health') {
+    return next();
+  }
+
+  try {
+    await assertApplicationRole();
+  } catch (error) {
+    logServerError('middleware.database_role.failed', error);
+    return new Response('Service temporarily unavailable. Please try again later.', {
+      status: 503,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
 
   // Define the protected paths
   const protectedPaths = ['/dashboard', '/transactions', '/budgets'];
