@@ -1,9 +1,10 @@
-﻿node_modules
+node_modules
 dist
 .git
 .github
 .vscode
 .astro
+.freebuff
 cdk.out
 hello-cdk
 tests
@@ -11,3 +12,6 @@ coverage
 docs
 npm-debug.log*
 .env*
+certs
+scripts/check-db-tables.mjs
+scripts/test-db-connection.mjs

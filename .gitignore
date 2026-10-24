@@ -29,3 +29,10 @@ pnpm-debug.log*
 
 # macOS-specific files
 .DS_Store
+
+# Local database certificates
+/certs/
+
+# Temporary database diagnostic scripts
+/scripts/check-db-tables.mjs
+/scripts/test-db-connection.mjs
