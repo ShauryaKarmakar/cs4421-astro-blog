@@ -33,7 +33,9 @@ COPY --from=build --chown=node:node /app/src/lib/postgresConfig.mjs /app/src/lib
 USER node
 EXPOSE 8080
 
+# Liveness only. A database outage must not read as a dead process;
+# readiness is /api/health, which the load balancer target group probes.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:8080/api/health').then((response) => process.exit(response.status === 200 ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:8080/api/live').then((response) => process.exit(response.status === 200 ? 0 : 1)).catch(() => process.exit(1))"
 
 CMD ["node", "./scripts/start.mjs"]

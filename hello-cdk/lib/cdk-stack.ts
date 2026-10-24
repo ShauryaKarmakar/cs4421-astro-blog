@@ -287,12 +287,16 @@ export class UniBudgetStack extends cdk.Stack {
         logGroup,
         streamPrefix: 'application',
       }),
+      // Liveness only. This probe must not depend on PostgreSQL: ECS stops
+      // and replaces a task whose container health check fails, so a database
+      // outage must not read as a dead process. Readiness stays on
+      // /api/health, which the load balancer target group probes.
       healthCheck: {
         command: [
           'CMD',
           'node',
           '-e',
-          "fetch('http://127.0.0.1:8080/api/health').then((response) => process.exit(response.status === 200 ? 0 : 1)).catch(() => process.exit(1))",
+          "fetch('http://127.0.0.1:8080/api/live').then((response) => process.exit(response.status === 200 ? 0 : 1)).catch(() => process.exit(1))",
         ],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),

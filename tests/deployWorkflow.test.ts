@@ -70,23 +70,48 @@ describe('deployment workflow contracts', () => {
     );
   });
 
-  it('validates exact secret ARNs instead of substring matches', () => {
+  it('validates the exact secret ARN and JSON key for every migration secret', () => {
     const validation = stepBlock('Validate Migration Task Configuration');
 
-    expect(validation).toContain('require_exact_secret');
+    expect(validation).toContain('require_exact_secret() {');
     expect(validation).toContain(
-      'require_exact_secret PGUSER "$SUPABASE_MIGRATION_SECRET_ARN"',
+      'local name=$1 arn=$2 suffix=$3 count actual expected',
+    );
+    expect(validation).toContain('expected="$arn$suffix"');
+    expect(validation).toContain('if [ "$actual" != "$expected" ]; then');
+    expect(validation).toContain(
+      'does not reference the expected Secrets Manager ARN and JSON key',
+    );
+
+    // Each variable must name its own key against its own secret.
+    expect(validation).toContain(
+      `require_exact_secret PGUSER "$SUPABASE_MIGRATION_SECRET_ARN" ':username::'`,
     );
     expect(validation).toContain(
-      'require_exact_secret PGPASSWORD "$SUPABASE_MIGRATION_SECRET_ARN"',
+      `require_exact_secret PGPASSWORD "$SUPABASE_MIGRATION_SECRET_ARN" ':password::'`,
     );
     expect(validation).toContain(
-      'require_exact_secret APP_DATABASE_PASSWORD "$SUPABASE_APPLICATION_SECRET_ARN"',
+      `require_exact_secret APP_DATABASE_PASSWORD "$SUPABASE_APPLICATION_SECRET_ARN" ':password::'`,
     );
     expect(validation).toContain(
-      'require_exact_secret SUPABASE_CA_CERT "$SUPABASE_CA_SECRET_ARN"',
+      `require_exact_secret SUPABASE_CA_CERT "$SUPABASE_CA_SECRET_ARN" ''`,
     );
-    expect(validation).toContain('"$expected"|"$expected":*::');
+
+    // A swapped key must not pass: PGUSER may not point at the password key,
+    // and PGPASSWORD may not point at the username key.
+    expect(validation).not.toContain(
+      `require_exact_secret PGUSER "$SUPABASE_MIGRATION_SECRET_ARN" ':password::'`,
+    );
+    expect(validation).not.toContain(
+      `require_exact_secret PGPASSWORD "$SUPABASE_MIGRATION_SECRET_ARN" ':username::'`,
+    );
+    expect(validation).not.toContain(
+      `require_exact_secret APP_DATABASE_PASSWORD "$SUPABASE_APPLICATION_SECRET_ARN" ':username::'`,
+    );
+
+    // No wildcard or prefix form may remain in the comparison.
+    expect(validation).not.toContain('"$expected":*::');
+    expect(validation).not.toContain('"$expected"|"$expected"');
     expect(validation).not.toContain('contains($needle)');
   });
 
@@ -124,6 +149,31 @@ describe('deployment workflow contracts', () => {
     );
     expect(cloudFrontStep).toContain('DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT');
     expect(cloudFrontStep).toContain('exit 1');
+  });
+
+  it('rejects edge configuration that could synthesize a response', () => {
+    const cloudFrontStep = stepBlock('Verify CloudFront Delivery Configuration');
+
+    const driftChecks = [
+      ['cache behavior count', '(.CacheBehaviors.Items // []) | length'],
+      ['custom error response count', '(.CustomErrorResponses.Items // []) | length'],
+      [
+        'CloudFront function association count',
+        '(.DefaultCacheBehavior.FunctionAssociations.Items // []) | length',
+      ],
+      [
+        'Lambda@Edge association count',
+        '(.DefaultCacheBehavior.LambdaFunctionAssociations.Items // []) | length',
+      ],
+    ];
+
+    for (const [label, expression] of driftChecks) {
+      // The expected count is 0, so an unexpected cache behavior, custom
+      // error response, or edge function association fails closed.
+      expect(cloudFrontStep).toContain(
+        `require_config "${label}" "$(jq -r '${expression}' <<<"$config")" "0"`,
+      );
+    }
   });
 
   it('uses the derived CloudFront outputs as the only public HTTPS URL', () => {

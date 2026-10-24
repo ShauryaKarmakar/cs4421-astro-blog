@@ -332,6 +332,15 @@ jobs:
           # Host), all cookies (the session cookie), and all query strings.
           require_config "cache policy" "$(jq -r '.DefaultCacheBehavior.CachePolicyId' <<<"$config")" "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
           require_config "origin request policy" "$(jq -r '.DefaultCacheBehavior.OriginRequestPolicyId' <<<"$config")" "216adef6-5c7f-47e4-b989-5492eafa07d3"
+          # A cache behavior could re-enable caching or route some paths to a
+          # different origin, a custom error response could turn an origin
+          # failure into a 200 page, and an edge function could synthesize a
+          # response without contacting the origin at all. The CDK distribution
+          # defines none of them, so any presence is drift and fails closed.
+          require_config "cache behavior count" "$(jq -r '(.CacheBehaviors.Items // []) | length' <<<"$config")" "0"
+          require_config "custom error response count" "$(jq -r '(.CustomErrorResponses.Items // []) | length' <<<"$config")" "0"
+          require_config "CloudFront function association count" "$(jq -r '(.DefaultCacheBehavior.FunctionAssociations.Items // []) | length' <<<"$config")" "0"
+          require_config "Lambda@Edge association count" "$(jq -r '(.DefaultCacheBehavior.LambdaFunctionAssociations.Items // []) | length' <<<"$config")" "0"
           methods=$(jq -r '.DefaultCacheBehavior.AllowedMethods | (.Items // []) | sort | join(",")' <<<"$config")
           if [ "$methods" != "DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT" ]; then
             echo "::error::CloudFront allowed methods are $methods; POST, PUT, PATCH, and DELETE must reach the application."
@@ -683,8 +692,8 @@ jobs:
             exit 1
           fi
           require_exact_secret() {
-            local name=$1 expected=$2 count actual
-            if [ -z "$expected" ]; then
+            local name=$1 arn=$2 suffix=$3 count actual expected
+            if [ -z "$arn" ]; then
               echo "::error::The stack output for $name's secret ARN is empty."
               exit 1
             fi
@@ -696,23 +705,23 @@ jobs:
             fi
             actual=$(jq -r --arg name "$name" \
               '.secrets[] | select(.name == $name) | .valueFrom' <<<"$container")
-            # A JSON-key reference appends :<key>:: to the secret ARN. The ARN
-            # itself must match the stack output exactly; a substring match
-            # would accept another secret whose name contains the expected one.
-            case "$actual" in
-              "$expected"|"$expected":*::) ;;
-              *)
-                echo "::error::Migration task $name does not reference the expected secret ARN."
-                exit 1
-                ;;
-            esac
+            # A JSON-key reference is exactly <arn>:<key>::, so the expected
+            # value is this stack ARN plus this variable's own key. The exact
+            # comparison rejects a bare ARN, a wildcard suffix, another secret
+            # whose name contains this one, and PGUSER referencing the password
+            # key (or the reverse).
+            expected="$arn$suffix"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::Migration task $name does not reference the expected Secrets Manager ARN and JSON key."
+              exit 1
+            fi
           }
-          require_exact_secret PGUSER "$SUPABASE_MIGRATION_SECRET_ARN"
-          require_exact_secret PGPASSWORD "$SUPABASE_MIGRATION_SECRET_ARN"
-          require_exact_secret APP_DATABASE_PASSWORD "$SUPABASE_APPLICATION_SECRET_ARN"
-          require_exact_secret SUPABASE_CA_CERT "$SUPABASE_CA_SECRET_ARN"
+          require_exact_secret PGUSER "$SUPABASE_MIGRATION_SECRET_ARN" ':username::'
+          require_exact_secret PGPASSWORD "$SUPABASE_MIGRATION_SECRET_ARN" ':password::'
+          require_exact_secret APP_DATABASE_PASSWORD "$SUPABASE_APPLICATION_SECRET_ARN" ':password::'
+          require_exact_secret SUPABASE_CA_CERT "$SUPABASE_CA_SECRET_ARN" ''
 
-          echo "Migration task configuration matches the current host, role ARNs, image override, and exact secret ARNs."
+          echo "Migration task configuration matches the current host, role ARNs, image override, and exact secret ARNs and JSON keys."
 
       - name: Run the One-Off Migration Task
         if: inputs.bootstrapOnly != true

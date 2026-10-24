@@ -140,6 +140,13 @@ describe('UniBudget infrastructure', () => {
     expect(appContainer.PortMappings).toContainEqual(
       expect.objectContaining({ ContainerPort: 8080, Protocol: 'tcp' }),
     );
+    // Liveness and readiness stay separate: the container probe must not
+    // depend on PostgreSQL, while the target group keeps the database-backed
+    // readiness path asserted above. A database outage therefore drains the
+    // target group instead of making ECS replace healthy tasks.
+    const livenessCommand = (appContainer.HealthCheck?.Command ?? []).join(' ');
+    expect(livenessCommand).toContain('/api/live');
+    expect(livenessCommand).not.toContain('/api/health');
 
     expect(migrationContainer.Command).toEqual([
       'node',

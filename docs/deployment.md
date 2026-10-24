@@ -159,21 +159,41 @@ local diagnostic scripts are excluded by `.dockerignore` and the Dockerfile.
 `uuid-ossp` is installed in Supabase's `extensions` schema; inserts using the
 UUID column defaults do not require privileges on that schema.
 
-## Health checks and role assertion
+## Health checks, liveness, and role assertion
+
+Two endpoints report different things, and each probe uses the one that
+matches its purpose:
+
+| Endpoint | Reaches PostgreSQL | Used by |
+| --- | --- | --- |
+| `/api/live` | no | ECS container health check and the image `HEALTHCHECK` |
+| `/api/health` | yes | ALB target group, the workflow's post-deploy check, and operators |
+
+`/api/live` answers `{"status":"ok"}` with HTTP 200 from the process alone.
+It never opens a connection, so a Supabase outage cannot mark a healthy task
+as dead and send ECS into a replacement loop.
 
 `/api/health` runs `SELECT 1` on a separate single-connection pool with a
 two-second server-side `statement_timeout` and a 2.5-second client query
 timeout. The query is cancelled, not merely raced, and returns
 `{"status":"ok"}` with HTTP 200 or `{"status":"unavailable"}` with HTTP 503.
-It never returns database, host, role, or credential details. Both the
-container `HEALTHCHECK` and the ALB target group use this endpoint and accept
-only HTTP 200.
+It never returns database, host, role, or credential details. Both endpoints
+accept only HTTP 200 and neither is cached or protected by the role gate.
 
 In production, middleware asserts that the current database role is
 `unibudget_app` and returns 503 if it is not. The check uses the same bounded
 health pool, is cached after the first success, and is retried after a failure,
 so a misconfigured `PGUSER` fails closed instead of hanging the request or
 running with elevated privileges.
+
+The split is deliberate. Readiness stays database-dependent, so the load
+balancer stops routing new requests to a target that cannot serve them.
+Liveness stays database-independent, so ECS keeps the existing tasks. During
+a database outage the observed effect is a drained target group behind
+CloudFront that recovers on its own, not a service that replaces its tasks
+every few minutes. The trade-off is that ECS will not replace a task whose
+process is alive but whose database connection is broken; that task is
+reused when the dependency recovers instead of being restarted.
 
 ## HTTPS and the CloudFront distribution
 
@@ -197,8 +217,8 @@ The distribution is configured by the CDK stack, not by hand:
   required.
 - **Caching:** `CachingDisabled` for the whole distribution. Astro renders
   per-user HTML, and the same host serves `/api/auth/*`, `/api/budgets`,
-  `/api/transactions`, and `/api/health`; no response may be stored or shared
-  between viewers.
+  `/api/transactions`, `/api/health`, and `/api/live`; no response may be
+  stored or shared between viewers.
 - **Origin request policy:** `AllViewer`, which forwards every viewer header
   (including `Host`), all cookies (the `session` cookie), and all query strings.
   Astro therefore sees the CloudFront hostname and its relative redirects stay
