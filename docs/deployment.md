@@ -253,11 +253,13 @@ Prerequisites:
 3. Read the `ApplicationUrl` and `CloudFrontDomainName` stack outputs. They are
    `https://<distribution-id>.cloudfront.net`; do not invent or paste a
    hostname, and do not create a DNS record.
-4. Run the workflow again with `bootstrapOnly=false`, the same `imageTag`, and
-   `recoveryPlanVerified=true` after confirming the restore point. It checks
-   the CloudFront delivery configuration, builds and pushes the image,
-   validates both task definitions and the migration task, runs the migration,
-   and only then deploys the requested running task count.
+4. Run the workflow again with `bootstrapOnly=false`, the same `imageTag`,
+   `recoveryPlanVerified=true`, and the recorded `recoveryPointReference` and
+   `recoveryPointTimestamp` for the restore point you verified. It checks the
+   CloudFront delivery configuration and the HTTPS `/login` origin response,
+   builds and pushes the image, validates both task definitions and the
+   migration task, runs the migration, and only then deploys the requested
+   running task count.
 5. Confirm the ALB target is healthy and that
    `https://<distribution-id>.cloudfront.net/api/health` returns 200.
 6. Register a user, sign in, and verify that the session survives a request.
@@ -533,15 +535,18 @@ For an existing stack the workflow:
    from the stack outputs and verifies that the distribution is `Deployed`,
    serves this stack's ALB, redirects HTTP to HTTPS, uses `CachingDisabled`,
    forwards all headers and cookies, allows the required methods, and is not
-   attached to a custom domain, before building or migrating;
+   attached to a custom domain, then requests the HTTPS `/login` page through
+   CloudFront and requires the real UniBudget login form on a cache miss,
+   following redirects only on that hostname, before building or migrating;
 2. builds and pushes a new immutable tag (it refuses to overwrite an existing
    tag);
 3. reads both task definitions and the exact role and secret ARNs from stack
    outputs;
 4. verifies the cluster and service are `ACTIVE`;
 5. verifies both task definitions' task role and execution role ARNs against
-   the stack outputs, and the migration container command, `PGHOST`, `PGPORT`,
-   `PGDATABASE`, `PGSSLMODE`, and exact secret names and ARNs;
+   the stack outputs, the application container's exact environment variables
+   and secret references, and the migration container command, `PGHOST`,
+   `PGPORT`, `PGDATABASE`, `PGSSLMODE`, and exact secret names and ARNs;
 6. runs the migration task with an explicit image override and stops it if the
    job is cancelled or exceeds 30 minutes;
 7. deploys the stack only after migration exit code `0`;
@@ -552,8 +557,10 @@ For an existing stack the workflow:
 The workflow requires an explicit `desiredCount` between `1` and `10`; it has
 no default and never silently scales the service to zero. A non-bootstrap run
 also requires `recoveryPlanVerified=true`, the explicit confirmation that a
-restorable Supabase backup or PITR restore point exists; the run refuses to
-migrate without it. To intentionally stop the service, deploy the stack
+restorable Supabase backup or PITR restore point exists, plus that point's
+`recoveryPointReference` and `recoveryPointTimestamp`, which are recorded in the
+run summary; the run refuses to migrate without them. To intentionally stop the
+service, deploy the stack
 separately with `desiredCount=0` during an approved maintenance window.
 
 If the pooler host or secret references in the stack differ from what the

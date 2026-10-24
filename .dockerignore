@@ -15,3 +15,14 @@ npm-debug.log*
 certs
 scripts/check-db-tables.mjs
 scripts/test-db-connection.mjs
+
+# Local review artifacts and imported conversation data
+artifacts/
+.cloud-attachments/
+
+# Local test certificates and private keys; the production CA is injected at runtime
+**/*.key
+**/*.pem
+**/*.crt
+**/*.csr
+**/*.srl

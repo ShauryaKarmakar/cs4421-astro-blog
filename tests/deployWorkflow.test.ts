@@ -192,4 +192,99 @@ describe('deployment workflow contracts', () => {
     expect(positions.every((index) => index > -1)).toBe(true);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
+
+  it('validates the application task definition before migrating', () => {
+    const validation = stepBlock('Validate Migration Task Configuration');
+
+    expect(validation).toContain('ApplicationContainer');
+    expect(validation).toContain(
+      'expected_app_environment="HOST NODE_ENV PGDATABASE PGHOST PGPORT PGSSLMODE PORT"',
+    );
+    expect(validation).toContain('require_app_environment PGSSLMODE verify-full');
+    expect(validation).toContain(
+      'expected_app_secrets="PGPASSWORD PGUSER SUPABASE_CA_CERT"',
+    );
+    expect(validation).toContain(
+      "require_app_secret PGUSER \"$SUPABASE_APPLICATION_SECRET_ARN\" ':username::'",
+    );
+    expect(validation).toContain(
+      "require_app_secret PGPASSWORD \"$SUPABASE_APPLICATION_SECRET_ARN\" ':password::'",
+    );
+    expect(validation).toContain(
+      "require_app_secret SUPABASE_CA_CERT \"$SUPABASE_CA_SECRET_ARN\" ''",
+    );
+    expect(validation).toContain('environmentFiles');
+    expect(validation).toContain('DATABASE_URL$');
+  });
+
+  it('verifies origin delivery through CloudFront before building the image', () => {
+    const cloudFrontStep = stepBlock('Verify CloudFront Delivery Configuration');
+    const buildStepIndex = workflow.indexOf(
+      '      - name: Build and Push Application Image\n',
+    );
+    const originCheckIndex = workflow.indexOf('login_https_url=');
+
+    expect(originCheckIndex).toBeGreaterThan(-1);
+    expect(originCheckIndex).toBeLessThan(buildStepIndex);
+    expect(cloudFrontStep).toContain(
+      'CLUSTER: ${{ steps.outputs.outputs.cluster }}',
+    );
+    expect(cloudFrontStep).toContain(
+      'SERVICE: ${{ steps.outputs.outputs.service }}',
+    );
+    expect(cloudFrontStep).toContain('aws ecs describe-services');
+    expect(cloudFrontStep).toContain('https://$CLOUDFRONT_DOMAIN$login_path');
+    expect(cloudFrontStep).toContain('x-amz-cf-id');
+    expect(cloudFrontStep).toContain('Miss from cloudfront');
+    expect(cloudFrontStep).toContain('id="loginForm"');
+  });
+
+  it('requires and records a specific restore point for a normal deployment', () => {
+    const validation = stepBlock('Validate Deployment Inputs');
+
+    expect(workflow).toContain('recoveryPointReference:');
+    expect(workflow).toContain('recoveryPointTimestamp:');
+    expect(workflow).toContain(
+      'RECOVERY_POINT_REFERENCE: ${{ inputs.recoveryPointReference }}',
+    );
+    expect(workflow).toContain(
+      'RECOVERY_POINT_TIMESTAMP: ${{ inputs.recoveryPointTimestamp }}',
+    );
+    expect(validation).toContain('RECOVERY_POINT_REFERENCE');
+    expect(validation).toContain('recoveryPointTimestamp is in the future');
+    expect(validation).toContain('GITHUB_STEP_SUMMARY');
+  });
+});
+
+describe('repository hygiene contracts', () => {
+  function lines(name: string): string[] {
+    return readFileSync(resolve(projectRoot, name), 'utf8')
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .map((line) => line.trim());
+  }
+
+  it('keeps key material and review artifacts out of the build context', () => {
+    const dockerignore = lines('.dockerignore');
+
+    for (const pattern of [
+      '**/*.key',
+      '**/*.pem',
+      '**/*.crt',
+      '**/*.csr',
+      '**/*.srl',
+      'artifacts/',
+      '.cloud-attachments/',
+    ]) {
+      expect(dockerignore).toContain(pattern);
+    }
+    expect(dockerignore).toContain('.env*');
+  });
+
+  it('keeps review artifacts out of version control', () => {
+    const gitignore = lines('.gitignore');
+
+    expect(gitignore).toContain('/artifacts/');
+    expect(gitignore).toContain('/.cloud-attachments/');
+  });
 });

@@ -36,3 +36,7 @@ pnpm-debug.log*
 # Temporary database diagnostic scripts
 /scripts/check-db-tables.mjs
 /scripts/test-db-connection.mjs
+
+# Local review artifacts, smoke-test certificates/keys, and imported chat context
+/artifacts/
+/.cloud-attachments/

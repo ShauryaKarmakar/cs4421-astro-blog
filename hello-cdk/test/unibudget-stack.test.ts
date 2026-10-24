@@ -110,6 +110,33 @@ describe('UniBudget infrastructure', () => {
         Name.startsWith('MIGRATION_'),
       ),
     ).toBe(false);
+    const secretLogicalId = (secretName: string): string => {
+      const entry = Object.entries(
+        template.findResources('AWS::SecretsManager::Secret'),
+      ).find(([, resource]) => resource.Properties?.Name === secretName);
+      if (!entry) {
+        throw new Error(`Expected the stack to define the secret ${secretName}.`);
+      }
+      return entry[0];
+    };
+    const secretReference = (name: string) =>
+      (
+        appContainer.Secrets as Array<{ Name: string; ValueFrom?: unknown }>
+      ).find((secret) => secret.Name === name)?.ValueFrom;
+
+    const applicationSecretId = secretLogicalId('unibudget/supabase/application');
+    const caSecretId = secretLogicalId('unibudget/supabase/ca');
+
+    // The deployment workflow compares these references verbatim before it
+    // migrates, so the rendered shape is part of the contract: a JSON-key
+    // reference must end with :<key>:: and the CA must be the whole secret.
+    expect(secretReference('PGUSER')).toEqual({
+      'Fn::Join': ['', [{ Ref: applicationSecretId }, ':username::']],
+    });
+    expect(secretReference('PGPASSWORD')).toEqual({
+      'Fn::Join': ['', [{ Ref: applicationSecretId }, ':password::']],
+    });
+    expect(secretReference('SUPABASE_CA_CERT')).toEqual({ Ref: caSecretId });
     expect(appContainer.PortMappings).toContainEqual(
       expect.objectContaining({ ContainerPort: 8080, Protocol: 'tcp' }),
     );
