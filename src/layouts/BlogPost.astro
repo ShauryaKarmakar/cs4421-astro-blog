@@ -16,7 +16,7 @@ const { title, description, pubDate, updatedDate, heroImage, author } = Astro.pr
 
 <html lang="en">
 	<head>
-		<BaseHead title={title} description={description} />
+		<BaseHead title={title} description={description} type="article" />
 		<style>
 			main {
 				width: calc(100% - 2em);
@@ -55,6 +55,20 @@ const { title, description, pubDate, updatedDate, heroImage, author } = Astro.pr
 			.last-updated-on {
 				font-style: italic;
 			}
+			.article-note {
+				margin-top: 2.5rem;
+				padding-top: 1.25rem;
+				border-top: 1px solid rgb(var(--gray-light));
+				color: rgb(var(--gray));
+				font-size: 0.85em;
+			}
+			.back-link {
+				font-size: 0.9em;
+			}
+			.back-link a {
+				font-weight: 600;
+				text-decoration: none;
+			}
 		</style>
 	</head>
 
@@ -81,6 +95,11 @@ const { title, description, pubDate, updatedDate, heroImage, author } = Astro.pr
 						<hr />
 					</div>
 					<slot />
+					<p class="article-note">
+						This article is general information about managing money as a student, not
+						personalised financial, tax or investment advice.
+					</p>
+					<p class="back-link"><a href="/blog/">← All articles</a></p>
 					{author && <AuthorBio {...author} />}
 				</div>
 			</article>

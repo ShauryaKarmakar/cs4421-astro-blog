@@ -12,6 +12,11 @@ application-stack test asserts zero `AWS::CloudWatch::Alarm` and
 `AWS::Logs::MetricFilter` resources, so a future application release cannot
 recreate the duplicate alarms or the second filter.
 
+For drill-day triage — what to record first, which signal detects which
+failure, and what is safe to do about it — use
+[the chaos drill response playbook](chaos-drill.md). Log fields and
+copy-pasteable Logs Insights queries are in [logging.md](logging.md).
+
 ## Deployment status at the time of this review
 
 | Item | Code | Deployed | Notifying |
@@ -51,6 +56,21 @@ back to `OK`. Alarm history at 2026-10-25 17:34:53 UTC records
 arn:aws:sns:us-east-1:556890483680:unibudget-production-alarms". That proves
 CloudWatch executed the SNS action; it does not independently prove inbox
 receipt, and it does not prove metric-threshold evaluation.
+
+### Verified at drill preparation (2026-10-25)
+
+| Item | Observed value |
+| --- | --- |
+| Running release | task definition `UniBudgetStackApplicationTask3DB06674:4`, image tag `v1.1.3`, digest `sha256:168b26…` |
+| Log group | `/unibudget/ecs/application` exists, 7-day retention |
+| Metric filter | on that log group, pattern `{ $.level = "error" }`, metric `UniBudget/Application` `StructuredErrorCount` |
+| Filter vs emitted logs | matched: live log stream contains `{"level":"info","event":"http.request",…,"requestId":…}` records, so `level` is a top-level JSON field |
+| Alarms | exactly four `UniBudgetStack-Monitoring-*`, all `OK`, each with `unibudget-production-alarms` as its action |
+| Subscription | one email subscription with a real `SubscriptionArn` (confirmed) |
+| Notification delivery | CloudWatch executed the SNS action for a manual `StructuredErrors` transition on 2026-10-25 17:34 UTC; inbox receipt still unverified |
+
+No alarm threshold has been crossed by real traffic, and no production failure
+was generated for this review.
 
 ## Alarm definitions
 

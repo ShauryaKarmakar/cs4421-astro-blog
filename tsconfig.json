@@ -6,6 +6,7 @@
   ],
   "exclude": [
     "dist",
+    "dist-static",
     "hello-cdk",
     "cdk.out",
     "tests"

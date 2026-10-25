@@ -12,15 +12,17 @@ const { name, bio, avatar, socialLinks } = Astro.props;
 	<div class="author-details">
 		<h2 id="author-heading">About {name}</h2>
 		<p>{bio}</p>
-		<nav aria-label={`${name}'s social links`}>
-			<ul>
-				{
-					socialLinks.map(({ platform, url }) => (
-						<li><a href={url} rel="me noopener noreferrer">{platform}</a></li>
-					))
-				}
-			</ul>
-		</nav>
+		{
+			socialLinks.length > 0 && (
+				<nav aria-label={`${name}'s social links`}>
+					<ul>
+						{socialLinks.map(({ platform, url }) => (
+							<li><a href={url} rel="me noopener noreferrer">{platform}</a></li>
+						))}
+					</ul>
+				</nav>
+			)
+		}
 	</div>
 </aside>
 

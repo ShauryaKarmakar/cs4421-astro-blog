@@ -78,10 +78,44 @@ resources remain in the CDK stack but are no longer used by the application;
 they must not be removed without a verified snapshot and an approved cost
 decision.
 
+## Static blog
+
+The public blog at <https://d2eip6kpluaijf.cloudfront.net> is a separate static
+deployment. It is built from `src-static/` with `astro.config.static.mjs`, which
+keeps the server-rendered application out of the artifact entirely: the static
+build has no `output: 'server'`, no Node adapter, and no API, middleware,
+session or dashboard code.
+
+```powershell
+npm run dev:static      # local preview of the static pages
+npm run build:static    # writes dist-static/
+npm run check:static    # type-checks the static pages
+node scripts/verifyStaticBuild.mjs
+```
+
+`.github/workflows/deploy-static.yml` publishes the blog on changes to `main`
+that affect it, using GitHub OIDC and the existing deploy role:
+
+- it builds only the static configuration and fails if the output is missing a
+  required HTML page or contains a server bundle or API route;
+- it uploads to the existing bucket
+  `staticsitestack-sitebucket397a1860-33rkrycbsdvl` without deleting unrelated
+  objects, with HTML and feeds set to revalidate and hashed assets cached as
+  immutable;
+- it invalidates the existing distribution `E2JVO3G1WG2Q2T`, waits for the
+  invalidation to complete, and verifies the live homepage, every article,
+  assets, the HTTPS redirect and a real 404 response.
+
+Articles live in `src/content/blog`, so publishing one is a content change plus
+a push to `main`. The upload never deletes anything: when an article is removed,
+the workflow reports the old objects as warnings and they have to be deleted
+deliberately.
 ## Operations and release documentation
 
 - [Release readiness and deployment gate](./docs/release-readiness.md)
 - [CloudWatch alarms and operator triage](./docs/alarms.md)
+- [Log analysis and incident correlation](./docs/logging.md)
+- [Chaos drill response playbook](./docs/chaos-drill.md)
 - [CloudFront minimum-TLS proposal](./docs/cloudfront-tls-plan.md)
 - [Architecture decision records](./docs/adr/README.md)
 - [IAM least-privilege assessment](./docs/iam-least-privilege.md)

@@ -1,0 +1,35 @@
+---
+import BaseHead from '../components/BaseHead.astro';
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+import { SITE_DESCRIPTION } from '../consts';
+
+interface Props {
+	title: string;
+	description?: string;
+	/** Use the wider column for index-style pages. */
+	wide?: boolean;
+}
+
+const { title, description = SITE_DESCRIPTION, wide = false } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<BaseHead title={title} description={description} />
+	</head>
+	<body>
+		<Header />
+		<main class:list={[{ wide }]}>
+			<slot />
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	main.wide {
+		width: min(100% - 2em, 960px);
+	}
+</style>
