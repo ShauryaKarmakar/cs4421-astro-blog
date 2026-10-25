@@ -594,6 +594,37 @@ describe('UniBudget infrastructure', () => {
     });
   });
 
+  test('names every alarm inside the SNS topic policy source prefix', () => {
+    const template = createTemplate({ desiredCount: 1 });
+    const names = Object.values(
+      template.findResources('AWS::CloudWatch::Alarm'),
+    ).map((alarm) => alarm.Properties.AlarmName);
+
+    expect(names.sort()).toEqual([
+      'UniBudgetStack-RunningTaskCount',
+      'UniBudgetStack-StructuredErrors',
+      'UniBudgetStack-Target5xx',
+      'UniBudgetStack-UnhealthyTargets',
+    ]);
+    // The live SNS topic policy only allows cloudwatch.amazonaws.com to
+    // publish for alarm ARNs beginning with this prefix.
+    for (const name of names) {
+      expect(name).toMatch(/^UniBudgetStack-/);
+    }
+  });
+
+  test('names the bootstrap alarms too, without a task-count alarm', () => {
+    const names = Object.values(
+      createTemplate().findResources('AWS::CloudWatch::Alarm'),
+    ).map((alarm) => alarm.Properties.AlarmName);
+
+    expect(names.sort()).toEqual([
+      'UniBudgetStack-StructuredErrors',
+      'UniBudgetStack-Target5xx',
+      'UniBudgetStack-UnhealthyTargets',
+    ]);
+  });
+
   test('counts structured error log events and leaves notification actions to the operator', () => {
     const template = createTemplate({ desiredCount: 1 });
     const filters = Object.values(
