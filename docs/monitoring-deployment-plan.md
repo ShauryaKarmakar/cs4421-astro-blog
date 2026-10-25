@@ -1,201 +1,130 @@
-# Monitoring deployment plan — awaiting approval
+# Monitoring deployment record and ownership
 
 Date: 2026-10-25
-Branch: `chore/monitoring-alarm-identity` (based on `origin/main` at `4ce73f9`)
-Stack affected: `UniBudgetStack` only
-Status: **prepared, not deployed**. No AWS write was performed while preparing
-this plan.
+Status: **Deployed — `UniBudgetStack-Monitoring` owns the alarms and metric
+filter.** The earlier "Path A" proposal (inline alarms in `UniBudgetStack`) is
+closed.
 
-## 1. Verified production state
+## 1. Decision
 
-Read-only checks on 2026-10-25:
+`hello-cdk/lib/monitoring-stack.ts` is the single canonical implementation of
+the four production alarms and the application error metric filter. The
+application stack (`hello-cdk/lib/cdk-stack.ts`) must not define either. This
+file records the verified deployed state, the repository change that matches the
+repository to it, and the checks that must hold before any further deployment.
 
-| Item | Observed |
+## 2. Verified production state
+
+Read-only queries on 2026-10-25 at ~17:55 UTC. Nothing in this section was
+changed by this review.
+
+| Fact | Verified value |
 | --- | --- |
-| Alarms in the account | **0** (`describe-alarms` → `[]`) |
-| Metric filters on `/unibudget/ecs/application` | **0** |
-| Log group | `/unibudget/ecs/application`, retention 7 days, active streams |
-| SNS topic | `arn:aws:sns:us-east-1:556890483680:unibudget-production-alarms` |
-| SNS subscription | email `karmakarshaurya@gmail.com`, **confirmed** (real subscription ARN) |
-| Topic policy | `cloudwatch.amazonaws.com`, `sns:Publish`, this topic, `ArnLike aws:SourceArn = arn:aws:cloudwatch:us-east-1:556890483680:alarm:UniBudgetStack-*` |
-| Live ECR lifecycle | tagged `*`/10 + untagged/10 (set out of band) |
-| Stack template ECR lifecycle | tagged `any`/5 (stale) |
-| ECS service | `ACTIVE`, desired 1 / running 1, `COMPLETED`, image `v1` |
-| Deploy role | `unibudget-github-deploy` with `AdministratorAccess` |
+| Stack | `UniBudgetStack-Monitoring`, `UPDATE_COMPLETE`, last updated 2026-10-25 17:39:20 UTC |
+| Resources | 6: four `AWS::CloudWatch::Alarm`, one `AWS::Logs::MetricFilter`, one `AWS::CDK::Metadata` |
+| Resources not created | no ECS service, task definition, ECR repository, IAM role or policy, log group, or SNS topic |
+| SNS topic | existing `arn:aws:sns:us-east-1:556890483680:unibudget-production-alarms`, imported |
+| Topic policy | `cloudwatch.amazonaws.com` may `sns:Publish` only when `aws:SourceArn` is `arn:aws:cloudwatch:us-east-1:556890483680:alarm:UniBudgetStack-*` |
+| Alarm actions | all four alarms list the topic above as their only action |
+| Application stack | `UniBudgetStack`, `UPDATE_COMPLETE`, last updated 2026-10-24 22:59:56 UTC; 51 resources; **0 alarms, 0 metric filters** |
+| Application runtime | task definition `UniBudgetStackApplicationTask3DB06674:3`, image tag `v1`, desired 1 / running 1 |
 
-The notification channel exists and is confirmed, but **no alarm has ever been
-deployed**, so CloudWatch-to-SNS delivery has never been exercised.
+Deployed alarms (from the live stack template):
 
-## 2. Two implementations exist
+| Alarm name | Metric | Statistic / period | Threshold | Missing data |
+| --- | --- | --- | --- | --- |
+| `UniBudgetStack-Monitoring-Target5xx` | `AWS/ApplicationELB` `HTTPCode_Target_5XX_Count` (ALB + target group) | Sum / 300 s, 2 periods | `GreaterThanThreshold` 5 | `notBreaching` |
+| `UniBudgetStack-Monitoring-UnhealthyTargets` | `AWS/ApplicationELB` `UnHealthyHostCount` (ALB + target group) | Maximum / 60 s, 2 periods | `GreaterThanThreshold` 0 | `notBreaching` |
+| `UniBudgetStack-Monitoring-LiveTaskCount` | `AWS/ECS` `LiveTaskCount` (cluster + service) | Average / 60 s, 3 periods | `LessThanThreshold` 1 | `breaching` |
+| `UniBudgetStack-Monitoring-StructuredErrors` | `UniBudget/Application` `StructuredErrorCount` | Sum / 300 s, 2 periods | `GreaterThanThreshold` 5 | `notBreaching` |
 
-| | Path A — application stack (selected) | Path B — `UniBudgetStack-Monitoring` |
-| --- | --- | --- |
-| Code | `hello-cdk/lib/cdk-stack.ts` | `hello-cdk/lib/monitoring-stack.ts` (uncommitted, concurrent workstream) |
-| Alarms | 4, defined once | 4, duplicated definition |
-| 5xx / structured-error comparison | `GreaterThanThreshold` (> 5) | `GreaterThanOrEqualToThreshold` (>= 5) |
-| Metric filter | On the log group resource | Imported log group, same pattern |
-| ECR drift | Reconciled by the same update | **Not** reconciled |
-| Deploy surface | Existing stack update | New stack, 5 extra context values |
-| Duplicate risk | none | 8 alarms and a doubled metric if A is ever released |
+Metric filter (from the live stack template): log group
+`/unibudget/ecs/application`, pattern `{ $.level = "error" }`, metric
+`UniBudget/Application` / `StructuredErrorCount`, value `1`, default `0`.
 
-Path B's diff adds 4 alarms and 1 metric filter to a new stack but leaves the
-ECR template drift in place. Because `cdk-stack.ts` also defines the same four
-alarms, the next application release would create a second set with the same
-metrics, and both metric filters would publish `StructuredErrorCount` for the
-same log events, doubling the metric. Two definitions also already disagree at
-the boundary (5 vs greater than 5).
+**Assumptions, not independently verified here:** the deployer recorded that the
+stack was created with change sets `unibudget-monitoring-20261025-2` and
+corrected by `unibudget-monitoring-20261025-3`, that the topic's email
+subscription is confirmed, and that a manual `StructuredErrors` state transition
+executed the SNS action. The subscription and an executed action are consistent
+with the deployed actions, but no inbox receipt was inspected during this
+review.
 
-## 3. Decision
+## 3. Why this stack, and why `LiveTaskCount`
 
-**Deploy Path A only.** It keeps one source of truth, reconciles the ECR drift
-in the same change, needs no new stack, and produces a diff that touches no ECS
-service, task definition, image, migration, IAM, or log-group resource.
+- The generated application change set also proposed ECS service, task
+  definition, ECR, and IAM changes caused by the repository reference. Alarm
+  changes should not require touching the runtime.
+- A second implementation existed at the same time. If the application stack had
+  been updated with its own four alarms and filter, production would have had
+  **eight alarms** and **two filters** publishing `StructuredErrorCount` for the
+  same log events, halving the effective error threshold.
+- `RunningTaskCount` requires CloudWatch Container Insights, which this service
+  does not enable, so it had no datapoints. `LiveTaskCount` is published for a
+  standard ECS service and is the reliable availability signal.
+- All alarm names stay under the `UniBudgetStack-` prefix required by the
+  existing topic policy. No SNS or IAM change was needed.
 
-`UniBudgetStack-Monitoring` must **not** be deployed while the alarms remain in
-`cdk-stack.ts`. If that path is ever preferred, remove the four alarms and the
-metric filter from `cdk-stack.ts` first, in a separate reviewed change.
+## 4. Repository change prepared (uncommitted)
 
-## 4. Exact change set (Path A)
+- `hello-cdk/lib/cdk-stack.ts`: removed the four inline alarms, the metric
+  filter, the SNS action wiring, the `alarmTopicArn` property, and the
+  now-unused `cloudwatch`, `cloudwatch-actions`, and `sns` imports (124 lines
+  removed). A comment records the ownership boundary.
+- `hello-cdk/lib/monitoring-stack.ts`: added as the canonical implementation;
+  imports the log group, topic, and dimension values, and creates no ECS, ECR,
+  IAM, log-group, or SNS resource.
+- `hello-cdk/bin/cdk.ts`: `-c monitoringOnly=true` synthesizes only the
+  monitoring stack from its five required context values plus `desiredCount`;
+  the application branch no longer accepts `alarmTopicArn`.
+- `hello-cdk/test/unibudget-stack.test.ts`: asserts the application stack
+  creates zero alarms and zero metric filters.
+- `hello-cdk/test/monitoring-stack.test.ts`: asserts exactly four alarms and one
+  filter, their names, metrics, dimensions, thresholds, missing-data behavior,
+  SNS action, and that no owned resources are created.
+- `docs/adr/0009-cloudwatch-observability.md`: logging schema preserved; alarm
+  ownership, names, `LiveTaskCount`, and the reasons for the split updated.
 
-Synthesized with the live context (`imageTag=v1`, `desiredCount=1`,
-`supabaseHost=aws-0-eu-west-1.pooler.supabase.com`, port 5432, database
-`postgres`, prefix list `pl-3b927c52`, topic ARN above).
+## 5. Validation performed
 
-Template SHA-256:
-`d8e9278a77374dcc48e3300e45fc1c887309d9dbf800eeb0962fdb08c3abc4c3`
+| Check | Result |
+| --- | --- |
+| `npx tsc --noEmit` | exit 0, no diagnostics |
+| `npx jest` (both CDK suites) | 2 suites, 27 tests passed, 0 failed |
+| Synthesized application template | 51 resources, **0** `AWS::CloudWatch::Alarm`, **0** `AWS::Logs::MetricFilter`, 0 `AWS::SNS::Topic` |
+| Synthesized monitoring template | 6 resources: four alarms, one filter, one `CDKMetadata`; no ECS, ECR, IAM, log group, or SNS resource |
+| Cross-stack uniqueness | four alarm names, four unique values, all in the monitoring stack only |
+| Live-template comparison | synthesized monitoring resources equal the live template with **0** property differences (excluding `CDKMetadata`) |
+| Cross-stack dependencies | 0 `Fn::ImportValue` references in the monitoring template |
+| `git diff --check` | exit 0, no whitespace errors |
 
-| Alarm name (physical) | Metric | Statistic / period | Condition | Missing data | Action |
-| --- | --- | --- | --- | --- | --- |
-| `UniBudgetStack-Target5xx` | `AWS/ApplicationELB` `HTTPCode_Target_5XX_Count` (ALB + target group) | Sum / 5 min, 2 periods | > 5 | `notBreaching` | topic |
-| `UniBudgetStack-UnhealthyTargets` | `AWS/ApplicationELB` `UnHealthyHostCount` (ALB + target group) | Maximum / 1 min, 2 periods | > 0 | `notBreaching` | topic |
-| `UniBudgetStack-RunningTaskCount` | `AWS/ECS` `RunningTaskCount` (cluster + service) | Average / 1 min, 3 periods | < 1 | `breaching` | topic |
-| `UniBudgetStack-StructuredErrors` | `UniBudget/Application` `StructuredErrorCount` | Sum / 5 min, 2 periods | > 5 | `notBreaching` | topic |
+Both templates were synthesized from the real `bin/cdk.ts` entry point: the
+application stack with its normal context, and the monitoring stack with
+`-c monitoringOnly=true` and its five context values plus `desiredCount`.
 
-Also in the change set:
+## 6. Operational leftovers and risks
 
-- one `AWS::Logs::MetricFilter` on `/unibudget/ecs/application` matching
-  `{ $.level = "error" }`, publishing `UniBudget/Application/StructuredErrorCount`;
-- the ECR repository lifecycle policy text updated from the stale `any`/5 to
-  the approved tagged `*`/10 + untagged/10 (the live policy already has this
-  value; the update only reconciles the stack template).
+- **Do not execute `unibudget-monitoring-20261025-1`.** This change set on
+  `UniBudgetStack` is `CREATE_COMPLETE` / `AVAILABLE`, created 2026-10-25
+  16:02:21 UTC, with 12 changes including the four alarms and the metric filter
+  that now belong to the monitoring stack. Executing it would recreate the
+  duplicate alarms and doubled metric. Deletion requires separate approval.
+- The deploy workflow previously passed `-c alarmTopicArn` to the application
+  stack. Those two lines and the now-unused `ALARM_TOPIC_ARN` job variable were
+  removed; the workflow no longer references the context at all. The monitoring
+  stack is still deployed separately with its own context values.
+- The application stack's ECR template still says `any` / keep 5 untagged,
+  while the live repository policy retains 10. The next application deployment
+  reconciles that drift; it is unrelated to monitoring ownership.
+- The monitoring stack is not part of the application deploy workflow. Changing
+  alarms requires its own explicit `monitoringOnly` synthesis and approval.
+- The structured-error threshold counts only `level: "error"` records. A 5xx
+  without an exception is covered by the target-5xx alarm, not this one.
 
-`cdk diff` summary (read-only, `--no-change-set`):
+## 7. Next approval
 
-```
-[+] AWS::CloudWatch::Alarm Target5xxAlarm
-[+] AWS::CloudWatch::Alarm UnhealthyTargetsAlarm
-[+] AWS::CloudWatch::Alarm RunningTaskCountAlarm
-[+] AWS::CloudWatch::Alarm StructuredErrorAlarm
-[+] AWS::Logs::MetricFilter ApplicationErrorMetricFilter
-[~] AWS::ECR::Repository ApplicationRepository  (LifecyclePolicyText only)
-```
-
-No `AWS::ECS::*`, `AWS::ECR::Repository` replacement, image, secret, role, or
-migration change. `DesiredCount` stays 1 and the image stays `v1`.
-
-### Why alarm names are now explicit
-
-The live SNS topic policy only authorises publishing for alarm ARNs under
-`UniBudgetStack-*`. Without an explicit `alarmName`, the physical name is
-generated by CloudFormation at deploy time and cannot be verified from the
-template, so the policy condition could fail silently. This branch sets the
-four stable names above and asserts the prefix in CDK tests. Added on
-`chore/monitoring-alarm-identity`; it must be merged before the alarm
-deployment and before the application release so the release does not change
-alarm identity.
-
-## 5. Preconditions
-
-1. This branch reviewed and merged to `main` (or the deploy performed from this
-   exact commit with the approval below).
-2. The diff above regenerated immediately before deployment; stop if any
-   resource other than the five additions and the ECR policy text appears.
-3. Operator has `cloudformation:*` on `UniBudgetStack` and the CDK bootstrap
-   assets; the current deploy role already has `AdministratorAccess`.
-4. No deployment is in progress: ECS primary rollout `COMPLETED`, CloudFormation
-   stack `UPDATE_COMPLETE`.
-5. Approval recorded for the exact template hash and the resource list.
-
-## 6. Deployment (not executed)
-
-```bash
-cd hello-cdk
-UNIBUDGET_AWS_ACCOUNT=556890483680 \
-UNIBUDGET_AWS_REGION=us-east-1 \
-npx cdk deploy UniBudgetStack \
-  -c imageTag=v1 \
-  -c desiredCount=1 \
-  -c supabaseHost=aws-0-eu-west-1.pooler.supabase.com \
-  -c supabasePort=5432 \
-  -c supabaseDatabase=postgres \
-  -c cloudFrontOriginPrefixListId=pl-3b927c52 \
-  -c alarmTopicArn=arn:aws:sns:us-east-1:556890483680:unibudget-production-alarms
-```
-
-Review the change-set confirmation; do not use `--require-approval never` for
-this production update. The deploy creates no SNS topic and starts no task.
-
-## 7. Verification after an approved deployment
-
-```bash
-aws cloudwatch describe-alarms \
-  --alarm-name-prefix UniBudgetStack- \
-  --query 'MetricAlarms[].{Name:AlarmName,State:StateValue,Actions:AlarmActions}' \
-  --output json
-```
-
-Pass conditions:
-
-- exactly four alarms, named `UniBudgetStack-Target5xx`,
-  `UniBudgetStack-UnhealthyTargets`, `UniBudgetStack-RunningTaskCount`,
-  `UniBudgetStack-StructuredErrors`;
-- every `AlarmActions` equals the topic ARN;
-- every alarm ARN matches the policy's `alarm:UniBudgetStack-*` condition;
-- one metric filter present:
-
-```bash
-aws logs describe-metric-filters \
-  --log-group-name /unibudget/ecs/application \
-  --query 'metricFilters[].{Pattern:filterPattern,Metrics:metricTransformations}'
-```
-
-- ECR lifecycle policy and a lifecycle preview:
-
-```bash
-aws ecr get-lifecycle-policy --repository-name <repository>
-aws ecr start-lifecycle-policy-preview --repository-name <repository>
-aws ecr get-lifecycle-policy-preview --repository-name <repository> \
-  --query 'previewResult.imageDetails[].{Tags:imageTags,Action:action}'
-```
-
-Delivery proof, in order:
-
-1. `aws sns publish` to the topic proves the subscription only (the owner has
-   already confirmed it).
-2. A real alarm transition is required to prove the CloudWatch publish path.
-   Do not trigger it by breaking production. Wait for a genuine event, or use
-   an approved synthetic in a non-production account. Alarm history must show
-   `Successfully executed action arn:aws:sns:…`.
-
-## 8. Risks and rollback
-
-- **Stack update on production.** The change set is limited to five additions
-  and the ECR policy text, but CloudFormation still updates the live stack.
-  Confirm the diff immediately before approving.
-- **Alarm delivery is unproven** until a real transition. The topic policy and
-  names now match; evaluation is CloudWatch's responsibility.
-- **Quiet periods.** Three alarms use `notBreaching`; absence of target 5xx
-  traffic will not alarm. `RunningTaskCount` treats missing data as breaching.
-- **Do not roll the stack back to the previous template to silence an alarm.**
-  The previous template carries the unsafe `any`/5 ECR rule and would restore
-  it. Instead disable actions (`aws cloudwatch disable-alarm-actions --alarm-names …`)
-  or delete the four alarms; both keep the ECR policy and log data intact.
-- **No data loss.** Alarms and metric filters hold no application data;
-  deleting them loses only alarm history.
-
-## 9. Approval required
-
-Approve: `UniBudgetStack` update adding the four named alarms and one metric
-filter, and reconciling the ECR lifecycle policy text, against template
-`d8e9278a…` with no other resource change. Until that approval is recorded,
-nothing in this plan has been applied.
+1. Review the uncommitted diff for the files above.
+2. Commit and merge it before any application release, so the release uses the
+   application stack that no longer defines alarms or the metric filter.
+3. Then request separate approval for the release (tag, image, migration) and,
+   independently, for deleting the stale application change set.

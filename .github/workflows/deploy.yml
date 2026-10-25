@@ -43,7 +43,6 @@ env:
   AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
   AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
   SUPABASE_HOST: ${{ vars.SUPABASE_HOST }}
-  ALARM_TOPIC_ARN: ${{ vars.ALARM_TOPIC_ARN }}
   STACK_NAME: UniBudgetStack
   IMAGE_TAG: ${{ inputs.imageTag }}
   DESIRED_COUNT: ${{ inputs.desiredCount }}
@@ -258,8 +257,7 @@ jobs:
             -c imageTag="$IMAGE_TAG" \
             -c desiredCount=0 \
             -c supabaseHost="$SUPABASE_HOST" \
-            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST" \
-            -c alarmTopicArn="$ALARM_TOPIC_ARN"
+            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST"
         working-directory: hello-cdk
 
       - name: Read Stack Outputs
@@ -969,8 +967,7 @@ jobs:
             -c imageTag="$IMAGE_TAG" \
             -c desiredCount="$DESIRED_COUNT" \
             -c supabaseHost="$SUPABASE_HOST" \
-            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST" \
-            -c alarmTopicArn="$ALARM_TOPIC_ARN"
+            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST"
         working-directory: hello-cdk
 
       - name: Wait for the ECS Service
@@ -1064,6 +1061,19 @@ jobs:
             echo "::error::The login page returned $login_code through CloudFront."
             exit 1
           fi
+
+          # Correlation is part of the operability contract: an operator must be
+          # able to quote a request id from the response when reporting a
+          # failure. Fail the release if the header stops being returned.
+          request_id=$(curl --silent --show-error --dump-header - --output /dev/null \
+            --retry 12 --retry-delay 5 --retry-connrefused \
+            "${APPLICATION_URL%/}/login" \
+            | tr -d '\r' | awk 'tolower($1) == "x-request-id:" {print $2}' | tail -n 1)
+          if ! [[ "$request_id" =~ ^[A-Za-z0-9._-]{8,64}$ ]]; then
+            echo "::error::The application did not return a correlatable X-Request-Id header through CloudFront."
+            exit 1
+          fi
+          echo "Correlation id present on the login response: $request_id"
 
           # A healthy API and login page do not prove a dynamic content route
           # renders: /blog/:slug returned 500 in production while /api/health

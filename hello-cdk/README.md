@@ -1,9 +1,15 @@
 # UniBudget CDK stack
 
-This stack defines the ECS Fargate application, ALB, CloudFront distribution,
+This app defines the ECS Fargate application, ALB, CloudFront distribution,
 ECR repository, migration task, and the retained RDS resources. The application
 image is built from the repository root Dockerfile and pushed to ECR; the stack
 does not deploy a local `dist` directory.
+
+A separate `UniBudgetStack-Monitoring` stack (`lib/monitoring-stack.ts`) owns
+the four CloudWatch alarms and the `level=error` metric filter. It imports the
+existing log group, target-group dimensions, and SNS topic, so a monitoring
+deploy does not update ECS, ECR, or IAM. The app stack defines no alarms or
+metric filter; its test asserts zero. Do not deploy it for monitoring.
 
 CloudFront serves HTTPS on its AWS-generated `*.cloudfront.net` hostname with
 the AWS-managed certificate, so no custom domain or ACM certificate is needed.
@@ -24,29 +30,54 @@ prefix_list_id=$(aws ec2 describe-managed-prefix-lists \
 npx cdk synth --no-lookups \
   -c imageTag=v1.1.0 \
   -c supabaseHost=<project-pooler-host> \
-  -c cloudFrontOriginPrefixListId="$prefix_list_id" \
-  -c alarmTopicArn=<optional-existing-sns-topic-arn>
+  -c cloudFrontOriginPrefixListId="$prefix_list_id"
 
 npx cdk deploy --require-approval never \
   -c imageTag=v1.1.0 \
   -c desiredCount=0 \
   -c supabaseHost=<project-pooler-host> \
-  -c cloudFrontOriginPrefixListId="$prefix_list_id" \
-  -c alarmTopicArn=<optional-existing-sns-topic-arn>
+  -c cloudFrontOriginPrefixListId="$prefix_list_id"
 ```
 
 `desiredCount=0` is the bootstrap deploy: it creates the ECR repository, task
 definitions, load balancer, and CloudFront distribution without starting the
-application. `alarmTopicArn` is optional; when omitted, alarms exist but have
-no notification action. The stack imports an existing topic and never creates
-or subscribes one.
+application. The application stack no longer accepts an alarm topic; monitoring
+is deployed separately and imports the existing topic itself.
 
-The stack declares ten-tagged/ten-untagged ECR retention. That policy is not
-the live policy until the stack is deployed, and the deployment workflow
-refuses to push an image while the live policy is the older `tagStatus: any`
-rule. Apply the policy before the next release. Follow the full sequence in
+The stack declares ten-tagged/ten-untagged ECR retention. The live repository
+policy was applied out-of-band and passes the preflight, while the deployed
+CloudFormation template still records the older policy; expect that ECR-only
+drift on the next application-stack diff. Follow the full sequence in
 [../docs/deployment.md](../docs/deployment.md) and the release gate in
 [../docs/release-readiness.md](../docs/release-readiness.md).
+
+## Monitoring stack
+
+The monitoring stack is intentionally not part of the normal application
+deploy. It is deployed as `UniBudgetStack-Monitoring` (`UPDATE_COMPLETE` on
+2026-10-25) with four `OK` alarms and one metric filter. It uses
+`LiveTaskCount`, not `RunningTaskCount`, because the latter requires CloudWatch
+Container Insights. Use a reviewed direct command with the live ALB,
+target-group, ECS, and topic values; see [../docs/alarms.md](../docs/alarms.md)
+for the exact change-set history and rollback notes:
+
+```bash
+UNIBUDGET_AWS_ACCOUNT=<account> \
+UNIBUDGET_AWS_REGION=<region> \
+MSYS_NO_PATHCONV=1 \
+npx cdk deploy UniBudgetStack-Monitoring --require-approval never \
+  -c monitoringOnly=true \
+  -c alarmTopicArn=<existing-sns-topic-arn> \
+  -c loadBalancerFullName=app/<alb-name>/<alb-id> \
+  -c targetGroupFullName=targetgroup/<tg-name>/<tg-id> \
+  -c clusterName=<ecs-cluster-name> \
+  -c serviceName=<ecs-service-name> \
+  -c desiredCount=1 \
+  -c logGroupName=/unibudget/ecs/application
+```
+
+The change set must contain only the four alarms, one metric filter, and
+`CDKMetadata`. Stop if it proposes any ECS, ECR, IAM, SNS, or log-group change.
 
 ## Useful commands
 

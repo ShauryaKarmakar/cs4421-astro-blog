@@ -34,6 +34,22 @@ secret values.
 5. Confirm the drill database is disposable and has a restore point or can be
    recreated from migrations.
 
+### Preparation status
+
+| Prerequisite | Status | Evidence still needed |
+| --- | --- | --- |
+| Separate AWS account approved | **Not confirmed** | Account ID and approval record |
+| Drill CDK bootstrap and deploy role | **Not confirmed** | `CDKToolkit` stack and role ARN |
+| Drill stack deployed with `desiredCount=0` | **Not confirmed** | Stack status and service `desiredCount` |
+| Drill ECR repository and baseline image | **Not created** | Repository URI and baseline image digest |
+| Disposable drill database | **Not created** | Database host/project reference; no production data |
+| Baseline route statuses recorded | **Not started** | `/api/health`, `/login`, real and unknown blog slug |
+| Drill-only failing image | **Not built** | Local image ID and tag `v0.0.0-drill.1`; not pushed |
+
+The runbook is ready, but the drill cannot start until the first five rows have
+evidence. Do not substitute the production account or production database for
+any row.
+
 ## 3. Controlled failure
 
 Build a drill-only image that fails its container health check, for example a
@@ -85,6 +101,10 @@ CloudWatch retention or reconstruct them later.
 
 ## 7. Recorded result
 
+- Prerequisite status: the isolated account, bootstrap, disposable database,
+  and drill ECR repository are **not yet confirmed**. The PR #40 merge and
+  merge-commit CI success do not satisfy these prerequisites; no failure
+  simulation has been run.
 - Executed: **no**
 - Date/time: —
 - Operator: —
