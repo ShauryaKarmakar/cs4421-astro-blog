@@ -1,0 +1,92 @@
+---
+import PageLayout from '../../layouts/PageLayout.astro';
+import { SITE_TITLE } from '../../consts';
+---
+
+<PageLayout
+	title={`About ${SITE_TITLE}`}
+	description="What UniBudget is, who it is for, and how this static blog is built and deployed."
+>
+	<h1>About {SITE_TITLE}</h1>
+	<p class="lead">
+		UniBudget is a budgeting tool built around the way student money actually behaves: a few
+		large, predictable costs, a long tail of small ones, and income that arrives in irregular
+		amounts.
+	</p>
+
+	<section>
+		<h2>What it is</h2>
+		<p>
+			The application records your income and expense transactions, keeps a budget for the
+			current month, and shows overall spending against that budget. Each account only ever sees
+			its own transactions and budgets. There are no bank connections, no card details and no
+			imports from a bank statement — you enter what you spend, which is usually the point at
+			which you start noticing it.
+		</p>
+	</section>
+
+	<section>
+		<h2>Who it is for</h2>
+		<p>
+			Students who want a short weekly routine rather than a full accounting package. If your
+			income is a maintenance loan, a part-time job, a scholarship, help from family, or some
+			combination of those, the useful question is the same one: how much of this month's money
+			is already spoken for?
+		</p>
+	</section>
+
+	<section>
+		<h2>What this blog covers</h2>
+		<p>
+			The writing here is about the habits around the tool: putting a realistic monthly budget
+			together, finding the small recurring costs that quietly add up, planning for bills that
+			land all at once, and setting money aside without pretending that a student income is
+			stable. Every article is general information, not personalised financial, tax or
+			investment advice.
+		</p>
+		<p><a class="inline-link" href="/blog/">Read the articles →</a></p>
+	</section>
+
+	<section>
+		<h2>How this site is built</h2>
+		<p>
+			This blog is a static Astro site. The pages are generated ahead of time as plain HTML and
+			CSS, stored in an S3 bucket that is not publicly readable, and served through CloudFront
+			over HTTPS. There is no application server behind these pages, which is why they load
+			quickly and cannot leak data from the budgeting app.
+		</p>
+		<p>
+			The budgeting application itself is a separate, server-rendered Astro deployment with its
+			own database and login. The two deployments share component and content source code in one
+			repository but publish completely different artifacts: the blog never includes API routes,
+			sessions or dashboard pages.
+		</p>
+		<p>
+			UniBudget is a CS4421 (DevOps) project. The static deployment is reproducible from the
+			repository, and the deployment workflow builds the static configuration only, verifies the
+			expected HTML files, uploads without deleting unrelated objects, and waits for the
+			CloudFront invalidation before checking the live pages.
+		</p>
+	</section>
+</PageLayout>
+
+<style>
+	h1 {
+		margin-bottom: 0.4em;
+		font-size: clamp(2.2rem, 6vw, 2.8em);
+	}
+	.lead {
+		color: rgb(var(--gray));
+		font-size: 1.15em;
+	}
+	section + section {
+		margin-top: 2em;
+	}
+	h2 {
+		font-size: 1.55em;
+	}
+	.inline-link {
+		font-weight: 600;
+		text-decoration: none;
+	}
+</style>

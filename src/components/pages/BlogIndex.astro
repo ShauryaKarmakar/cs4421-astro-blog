@@ -1,0 +1,115 @@
+---
+import { getCollection } from 'astro:content';
+import PageLayout from '../../layouts/PageLayout.astro';
+import FormattedDate from '../FormattedDate.astro';
+
+const posts = (await getCollection('blog')).sort(
+	(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
+);
+---
+
+<PageLayout
+	title="Writing"
+	description="Practical articles about student budgets, tracking spending, irregular costs and saving while you study."
+	wide
+>
+	<header class="page-header">
+		<h1>Writing</h1>
+		<p>
+			Short, practical pieces about the money side of student life. No hype, no forecasts, no
+			advice that depends on knowing your income.
+		</p>
+	</header>
+
+	<ul class="post-list">
+		{
+			posts.map((post) => (
+				<li>
+					<article>
+						<p class="post-meta">
+							<FormattedDate date={post.data.pubDate} />
+						</p>
+						<h2>
+							<a href={`/blog/${post.id}/`}>{post.data.title}</a>
+						</h2>
+						<p class="post-description">{post.data.description}</p>
+						<p class="post-link">
+							<a href={`/blog/${post.id}/`} aria-label={`Read ${post.data.title}`}>
+								Read article →
+							</a>
+						</p>
+					</article>
+				</li>
+			))
+		}
+	</ul>
+
+	<p class="disclaimer">
+		Everything here is general information about managing money as a student, not personalised
+		financial advice.
+	</p>
+</PageLayout>
+
+<style>
+	.page-header {
+		margin-bottom: 2.5em;
+		padding-bottom: 1.5em;
+		border-bottom: 1px solid rgb(var(--gray-light));
+	}
+	.page-header p {
+		max-width: 46em;
+		margin: 0;
+		color: rgb(var(--gray));
+	}
+	.post-list {
+		display: grid;
+		gap: 1.25rem;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.post-list article {
+		display: grid;
+		gap: 0.35rem;
+		padding: 1.5em 1.6em;
+		border: 1px solid rgb(var(--gray-light));
+		border-radius: 14px;
+		background: #fff;
+	}
+	.post-meta {
+		margin: 0;
+		color: rgb(var(--gray));
+		font-size: 0.78em;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+	h2 {
+		margin: 0;
+		font-size: 1.5em;
+	}
+	h2 a {
+		color: rgb(var(--black));
+		text-decoration: none;
+	}
+	h2 a:hover {
+		color: var(--accent);
+	}
+	.post-description {
+		margin: 0;
+		color: rgb(var(--gray));
+		font-size: 0.98em;
+	}
+	.post-link {
+		margin: 0.35em 0 0;
+		font-size: 0.88em;
+	}
+	.post-link a {
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.disclaimer {
+		margin-top: 2.5em;
+		color: rgb(var(--gray));
+		font-size: 0.85em;
+	}
+</style>

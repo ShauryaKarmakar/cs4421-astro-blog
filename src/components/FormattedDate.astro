@@ -8,10 +8,13 @@ const { date } = Astro.props;
 
 <time datetime={date.toISOString()}>
 	{
-		date.toLocaleDateString('en-us', {
+		date.toLocaleDateString('en-GB', {
 			year: 'numeric',
 			month: 'short',
 			day: 'numeric',
+			// Dates come from frontmatter without a time zone; formatting in UTC
+			// keeps the visible date identical to the RSS feed's publish date.
+			timeZone: 'UTC',
 		})
 	}
 </time>

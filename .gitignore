@@ -1,5 +1,7 @@
 # build output
 dist/
+# static blog build output (deployed to S3 by .github/workflows/deploy-static.yml)
+dist-static/
 # generated types
 .astro/
 

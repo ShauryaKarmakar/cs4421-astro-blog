@@ -8,8 +8,11 @@
   },
   "scripts": {
     "dev": "astro dev",
+    "dev:static": "astro dev --config astro.config.static.mjs",
     "build": "astro build",
+    "build:static": "astro build --config astro.config.static.mjs",
     "check": "astro check",
+    "check:static": "astro check --config astro.config.static.mjs",
     "preview": "astro preview",
     "astro": "astro",
     "lint": "eslint .",

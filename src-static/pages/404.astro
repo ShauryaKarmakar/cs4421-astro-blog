@@ -1,0 +1,51 @@
+---
+import PageLayout from '../../src/layouts/PageLayout.astro';
+---
+
+<PageLayout
+	title="Page not found — UniBudget"
+	description="That page does not exist. Browse the UniBudget writing or head back to the homepage."
+>
+	<section class="not-found">
+		<p class="code">404</p>
+		<h1>That page is not here</h1>
+		<p>
+			The link may be out of date, or the article may have been renamed. Nothing is broken on
+			your side.
+		</p>
+		<ul class="links">
+			<li><a href="/blog/">Browse the writing</a></li>
+			<li><a href="/">Go to the homepage</a></li>
+			<li><a href="/about/">About UniBudget</a></li>
+		</ul>
+	</section>
+</PageLayout>
+
+<style>
+	.not-found {
+		padding: 1em 0 2em;
+	}
+	.code {
+		margin: 0;
+		color: rgb(var(--gray-light));
+		font-size: clamp(4rem, 16vw, 7rem);
+		font-weight: 700;
+		letter-spacing: -0.04em;
+		line-height: 1;
+	}
+	h1 {
+		margin: 0.1em 0 0.5em;
+		font-size: clamp(1.8rem, 5vw, 2.4em);
+	}
+	.links {
+		display: grid;
+		gap: 0.5em;
+		margin: 1.5em 0 0;
+		padding: 0;
+		list-style: none;
+	}
+	.links a {
+		font-weight: 600;
+		text-decoration: none;
+	}
+</style>
