@@ -494,6 +494,13 @@ export class UniBudgetStack extends cdk.Stack {
     // subscription address. When an operator supplies an existing topic ARN,
     // every alarm is wired to it; otherwise the alarms remain visible in the
     // console but notify nobody until that action is configured.
+    //
+    // Alarm names are explicit. The operator-managed SNS topic policy only
+    // authorises `sns:Publish` for alarm ARNs under the `UniBudgetStack-`
+    // prefix, and a CloudFormation-generated physical name is not visible in
+    // this template, so that condition could not be checked before deploying.
+    // Stable names also keep the runbook and alarm history references valid
+    // across stack updates.
     const alarms: cloudwatch.Alarm[] = [];
     alarms.push(
       targetGroup.metrics
@@ -502,6 +509,7 @@ export class UniBudgetStack extends cdk.Stack {
           statistic: 'Sum',
         })
         .createAlarm(this, 'Target5xxAlarm', {
+          alarmName: 'UniBudgetStack-Target5xx',
           alarmDescription:
             'More than five 5xx responses from the application targets in ten minutes.',
           threshold: 5,
@@ -519,6 +527,7 @@ export class UniBudgetStack extends cdk.Stack {
           statistic: 'Maximum',
         })
         .createAlarm(this, 'UnhealthyTargetsAlarm', {
+          alarmName: 'UniBudgetStack-UnhealthyTargets',
           alarmDescription:
             'At least one application target reported unhealthy for two consecutive minutes.',
           threshold: 0,
@@ -540,6 +549,7 @@ export class UniBudgetStack extends cdk.Stack {
             statistic: 'Average',
           })
           .createAlarm(this, 'RunningTaskCountAlarm', {
+            alarmName: 'UniBudgetStack-RunningTaskCount',
             alarmDescription: `Fewer than ${desiredCount} ECS tasks are running for three consecutive minutes.`,
             threshold: desiredCount,
             evaluationPeriods: 3,
@@ -568,6 +578,7 @@ export class UniBudgetStack extends cdk.Stack {
         statistic: 'Sum',
         period: cdk.Duration.minutes(5),
       }).createAlarm(this, 'StructuredErrorAlarm', {
+        alarmName: 'UniBudgetStack-StructuredErrors',
         alarmDescription:
           'More than five structured error log events in ten minutes.',
         threshold: 5,
