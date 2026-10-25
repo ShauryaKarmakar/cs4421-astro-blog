@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Pool } from 'pg';
+import { Pool, type PoolConfig } from 'pg';
 import { runMigrations } from '../scripts/migrate.mjs';
 
 const databaseUrl =
@@ -53,6 +53,20 @@ function databaseUrlFor(name: string): string {
   return url.toString();
 }
 
+// `DROP DATABASE ... WITH (FORCE)` can terminate a socket that is still
+// closing after `pool.end()` resolved, which pg reports as 57P01. That is an
+// expected part of teardown; any other pool error still fails the suite.
+let teardownStarted = false;
+
+function createPool(config: PoolConfig): Pool {
+  const pool = new Pool(config);
+  pool.on('error', (error: Error & { code?: string }) => {
+    if (teardownStarted && error.code === '57P01') return;
+    throw error;
+  });
+  return pool;
+}
+
 databaseDescribe('migration runner against disposable PostgreSQL', () => {
   const createdDatabases: string[] = [];
   const createdRoles: string[] = [];
@@ -72,7 +86,7 @@ databaseDescribe('migration runner against disposable PostgreSQL', () => {
   beforeAll(async () => {
     if (!databaseUrl) return;
 
-    adminPool = new Pool({ connectionString: databaseUrl, max: 1 });
+    adminPool = createPool({ connectionString: databaseUrl, max: 1 });
     const existingRoles = await adminPool.query<{ rolname: string }>(
       'SELECT rolname FROM pg_roles WHERE rolname = ANY($1::text[])',
       [apiRoles],
@@ -84,7 +98,7 @@ databaseDescribe('migration runner against disposable PostgreSQL', () => {
     }
 
     primaryDatabase = await createDatabase();
-    applicationPool = new Pool({
+    applicationPool = createPool({
       connectionString: databaseUrlFor(primaryDatabase),
       max: 1,
     });
@@ -98,6 +112,7 @@ databaseDescribe('migration runner against disposable PostgreSQL', () => {
   }, 60_000);
 
   afterAll(async () => {
+    teardownStarted = true;
     await applicationPool?.end();
     if (adminPool) {
       for (const name of createdDatabases) {
@@ -226,7 +241,7 @@ databaseDescribe('migration runner against disposable PostgreSQL', () => {
 
     const directory = mkdtempSync(join(tmpdir(), 'unibudget-failing-migration-'));
     const failingDatabase = await createDatabase();
-    const failingPool = new Pool({
+    const failingPool = createPool({
       connectionString: databaseUrlFor(failingDatabase),
       max: 1,
     });
@@ -286,7 +301,7 @@ databaseDescribe('migration runner against disposable PostgreSQL', () => {
     if (!adminPool) throw new Error('Admin database was not initialized.');
 
     const driftDatabase = await createDatabase();
-    const driftPool = new Pool({
+    const driftPool = createPool({
       connectionString: databaseUrlFor(driftDatabase),
       max: 1,
     });
