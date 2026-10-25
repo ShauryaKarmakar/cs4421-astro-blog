@@ -650,11 +650,15 @@ verified inventory and the staged migration plan.
 
 ## Release versions, image identity, and provenance
 
-The next release candidate is **`v1.1.0`**: the changes fix the blog route and
-add operational hardening without a breaking API or schema change. Do not
-automatically use `v2.0.0`. The existing `v1.0.0` Git tag is not moved; the
-deployed `v1` image is a legacy artifact whose exact source commit cannot be
-proven because it predates the OCI labels.
+**`v1.1.3` is released and verified in production** on `c9eb373`, with image
+digest `sha256:168b26f5…`, task definition `:4`, and `/api/health`, `/login`,
+and `/blog/first-post` returning 200 over CloudFront. It fixed the blog route
+and added operational hardening without a breaking API or schema change.
+Earlier failed attempts left immutable tags `v1.1.0`, `v1.1.1`, and `v1.1.2`
+with no ECR image; do not reuse those tags. The next release uses the next
+patch version. The existing `v1.0.0` tag is not moved; the deployed `v1` image
+is a legacy artifact whose exact source commit cannot be proven because it
+predates the OCI labels.
 
 - `imageTag` must be `vMAJOR.MINOR.PATCH` with an optional prerelease suffix.
   The workflow rejects `v1`, `latest`, branch names, and commit SHAs before it
@@ -668,8 +672,8 @@ proven because it predates the OCI labels.
 - The ECR lifecycle policy retains ten tagged and ten untagged manifests. Do
   not add a second SHA tag per release; it would consume the retention window.
 
-No `v1.1.0` tag or image has been created. See
-[release-readiness.md](release-readiness.md) for the exact release sequence.
+See [release-readiness.md](release-readiness.md) for the release history,
+recovery point, evidence, and remaining risks.
 
 ## Subsequent deployments
 

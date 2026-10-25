@@ -29,6 +29,11 @@ changed by this review.
 | Application stack | `UniBudgetStack`, `UPDATE_COMPLETE`, last updated 2026-10-24 22:59:56 UTC; 51 resources; **0 alarms, 0 metric filters** |
 | Application runtime | task definition `UniBudgetStackApplicationTask3DB06674:3`, image tag `v1`, desired 1 / running 1 |
 
+After this review, `v1.1.3` was released on 2026-10-25 19:37 UTC. The
+application stack is `UPDATE_COMPLETE`, the service runs task definition
+`:4` with image `v1.1.3` at desired 1 / running 1, and all four alarms remain
+`OK`. The monitoring stack itself was not changed by the release.
+
 Deployed alarms (from the live stack template):
 
 | Alarm name | Metric | Statistic / period | Threshold | Missing data |
