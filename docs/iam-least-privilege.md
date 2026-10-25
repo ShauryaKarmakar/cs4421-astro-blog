@@ -20,7 +20,9 @@ workflow:
 The trust policy is already scoped to this repository and the `production`
 GitHub environment. It does not include a `ref:refs/heads/...` condition, so
 the environment's branch protection is the remaining branch restriction. The
-`AdministratorAccess` attachment is a real, verified over-permission.
+`AdministratorAccess` attachment is a real, verified over-permission. A
+re-check after PR #40 merged on 2026-10-25 still returned exactly that one
+attached policy and no inline policies; merging code did not change IAM.
 
 ## Why this is a risk
 

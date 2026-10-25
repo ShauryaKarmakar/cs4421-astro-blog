@@ -82,12 +82,24 @@ decision.
 
 - [Release readiness and deployment gate](./docs/release-readiness.md)
 - [CloudWatch alarms and operator triage](./docs/alarms.md)
+- [CloudFront minimum-TLS proposal](./docs/cloudfront-tls-plan.md)
 - [Architecture decision records](./docs/adr/README.md)
 - [IAM least-privilege assessment](./docs/iam-least-privilege.md)
 - [Rollback Drill 2 runbook](./docs/rollback-drill-2.md)
 - [Week 7 deliverables and evidence](./docs/week7-deliverables.md)
 
 The current production image is `v1`, which predates the blog SSR fix; verify
-`/blog/<slug>` after the next approved release. The readiness document lists
-the remaining external blockers (ECR policy, alarm notifications, IAM scope,
-release tag, and the unexecuted rollback drill).
+`/blog/<slug>` after the next approved release. The ECR lifecycle policy is now
+release-safe, and the SNS topic and email subscription are confirmed.
+
+The four alarms and the metric filter are deployed in the separate
+`UniBudgetStack-Monitoring` stack, which imports the existing log group and SNS
+topic and did not update ECS, ECR, IAM, or the SNS topic. All four alarms are
+`OK`; CloudWatch executed the SNS action successfully. Inbox receipt and a real
+metric threshold crossing remain unproven. The application stack no longer
+defines alarms or a metric filter; its test asserts that absence. The older
+`UniBudgetStack` change set remains blocked because it also proposed
+task-definition and IAM changes and would recreate the monitoring resources if
+executed; see [alarms.md](docs/alarms.md). The readiness document lists the
+remaining blockers (application release, IAM scope, CloudFront TLS, and the
+unexecuted rollback drill).
