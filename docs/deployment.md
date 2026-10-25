@@ -205,30 +205,39 @@ reused when the dependency recovers instead of being restarted.
 ## Observability and alerts
 
 The application writes to `/unibudget/ecs/application` with seven-day
-retention. `src/lib/serverLogger.ts` emits one JSON object per line to stderr
-with `level`, `event`, `errorName`, and an optional AWS error `code`; it never
-logs credentials, SQL, session tokens, or user data.
+retention. `src/lib/serverLogger.ts` emits one JSON object per line for every
+request (`http.request` with `requestId`, `method`, `path`, `status`, and
+`durationMs`) and for every server-side failure (`level: "error"` with `event`,
+`errorName`, and an optional SQLSTATE `code`). Both record types share a
+`requestId`, which is also returned in the `X-Request-Id` header, so a failure
+can be traced to the exact request. It never logs credentials, SQL, query
+strings, session tokens, or user data. See [logging.md](logging.md) for the
+field schema and the alarm-to-log workflow.
 
-The CDK stack defines a metric filter for `{ $.level = "error" }` and four
-alarms:
+The separate `UniBudgetStack-Monitoring` stack has a metric filter for
+`{ $.level = "error" }` and four deployed alarms. `UniBudgetStack` no longer
+defines any alarm or metric filter; its test asserts that absence, so an
+application release cannot recreate the duplicate filter:
 
 | Alarm | Meaning and first diagnostic |
 | --- | --- |
 | Target 5xx | More than five target 5xx responses in ten minutes; inspect the latest error events and the running digest. |
 | Unhealthy targets | A target is failing `/api/health`; check database reachability, role assertion, and task logs. |
-| Running tasks | Fewer tasks than the desired count for three minutes; inspect ECS events, task stop reasons, and capacity. |
+| Live tasks | Fewer live tasks than the desired count for three minutes; inspect ECS events, task stop reasons, and capacity. `LiveTaskCount` does not require Container Insights. |
 | Structured errors | More than five error log events in ten minutes; query Logs Insights by `level = "error"` and `event`. |
 
-Alarm notifications require an existing SNS topic with a confirmed
-subscription. Create the topic and subscription with an approved operator
-identity, then set the protected repository variable `ALARM_TOPIC_ARN` and
-deploy the stack with that context. The workflow passes it to both CDK deploy
-steps. The stack imports the topic and does not create or subscribe one. As of
-2026-10-25 no alarms exist in the account and no topic is wired, so this is a
-prepared design, not a working notification path. The exact topic policy,
-subscription confirmation, and per-alarm triage steps are in
-[alarms.md](alarms.md); a direct SNS publish does not prove that CloudWatch is
-allowed to publish to the topic.
+Alarm notifications use the existing SNS topic with a confirmed subscription.
+The monitoring stack imports the topic and does not create or subscribe one.
+As of 2026-10-25 the stack is `UPDATE_COMPLETE`, the four alarms are `OK`, and
+CloudWatch alarm history records a successful SNS action from a manual state
+transition. Inbox receipt was not independently verified, and no real metric
+threshold crossing has been observed. Do not deploy the application stack to
+add alarms: its earlier monitoring change set is blocked by ECS/ECR coupling
+and would recreate resources now owned by the monitoring stack. The exact
+topic policy, deployment commands, change-set history, subscription
+confirmation, and per-alarm triage steps are in [alarms.md](alarms.md); a
+direct SNS publish does not prove that CloudWatch is allowed to publish to the
+topic.
 
 ## HTTPS and the CloudFront distribution
 
@@ -278,9 +287,14 @@ to HTTPS, disables caching, forwards all headers and cookies, and allows all
 required methods **before** the image is built or the migration starts.
 
 CloudFront applies its default viewer security policy to the AWS-managed
-certificate. If a specific minimum TLS version (for example TLS 1.2) is a hard
-requirement, attach a custom domain and an ACM certificate; that is a separate
-change from this deployment.
+certificate. AWS documents that the default `*.cloudfront.net` certificate
+automatically sets that policy to `TLSv1`; a modern policy such as
+`TLSv1.2_2021` requires a custom SSL certificate, an alternate domain name, and
+SNI. That means a custom domain, an ACM certificate in `us-east-1`, and DNS
+changes. See [cloudfront-tls-plan.md](cloudfront-tls-plan.md) for the verified
+current state, the recommended `TLSv1.2_2021` target, the proposed CDK shape,
+and the separate approval/rollback requirements. It is not part of this
+deployment and has not been applied.
 
 ## First deployment
 
@@ -420,10 +434,10 @@ Configure these repository or environment variables:
 - `AWS_REGION`
 - `AWS_ACCOUNT_ID`
 - `SUPABASE_HOST`
-- `ALARM_TOPIC_ARN` — optional; an existing, operator-managed SNS topic with a
-  confirmed subscription and a policy that allows `cloudwatch.amazonaws.com` to
-  publish. Without it the alarms are deployed but notify nobody. See
-  [alarms.md](alarms.md).
+
+The application workflow does not deploy alarms. `UniBudgetStack-Monitoring` is
+deployed separately with its own `alarmTopicArn` context; see
+[alarms.md](alarms.md). No `ALARM_TOPIC_ARN` repository variable is required.
 
 The CloudFront hostname and the origin-facing prefix list ID are not repository
 variables: the workflow reads the hostname from the stack outputs and looks up
@@ -999,24 +1013,49 @@ observation table, acceptance criteria, and evidence template are in
 to create an intentional outage.
 
 The ECR lifecycle policy in `hello-cdk/lib/cdk-stack.ts` keeps ten tagged
-images and ten untagged images. The stack definition is not the live policy:
-on 2026-10-25 the repository still used one `tagStatus: any` rule with
-`countNumber: 5`, which counts the tagged index, the amd64 manifest, and the
-BuildKit attestation together. That policy is unsafe for the next push because
-two releases already produce six manifests.
+images and ten untagged images. On 2026-10-25 the live repository still used
+one `tagStatus: any` rule with `countNumber: 5`, which counted the tagged
+index, the amd64 manifest, and the BuildKit attestation together. That policy
+was unsafe for the next push because two releases already produce six
+manifests.
 
-Apply the CDK policy **before** the next release image is pushed. The
-workflow now performs a read-only preflight and fails before the build if the
-live policy is still unsafe, so the unsafe push cannot proceed unnoticed. A
-production policy update is a separate approved infrastructure change (for
-example, a `cdk deploy` using the currently deployed `v1` image and the current
-desired count). Do not rely on the daily lifecycle evaluation to miss a newly
-pushed manifest.
+The authorized correction was applied through the ECR API on 2026-10-25, not
+through CloudFormation. The live policy is now tagged `*`/10 plus untagged/10,
+the local preflight returns `safe: true`, and a lifecycle preview reports 0
+expiring images with all three existing manifests retained. The ECR read-back
+matches the policy generated from the merged CDK code byte-for-byte.
 
-ECR can preview only the policy that is currently applied. It has no dry run
-for an unapplied policy, and a preview that lists zero expiring images today
-does not validate the proposed ten/ten rule. After applying the policy, run
-the preview again and confirm the tagged release history is retained.
+The applied policy is:
+
+```json
+{"rules":[{"rulePriority":1,"description":"Retain the ten most recent tagged releases as rollback candidates.","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}},{"rulePriority":2,"description":"Expire untagged manifests and attestations no longer referenced by a tagged release.","selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}
+```
+
+CloudFormation has not reconciled the change: the deployed stack template still
+records the old policy. Run `cdk diff` before the next stack deployment and
+expect a pending repository update. The deployment workflow's read-only
+preflight remains in place and fails before the build if the live policy ever
+becomes unsafe again.
+
+A lifecycle preview reflects only the policy currently applied; ECR has no
+dry run for an unapplied policy. Re-run the preview after any later policy
+change and confirm the tagged release history is retained.
+
+Rollback for the policy change is an explicit ECR write. Use it only if the
+ten/ten policy unexpectedly expires a needed manifest; restoring the audited
+policy is known but unsafe for long-term retention, so fix forward afterward.
+
+```bash
+aws ecr put-lifecycle-policy \
+  --repository-name unibudgetstack-applicationrepository13e54097-nb3o4t9o4cok \
+  --region us-east-1 \
+  --lifecycle-policy-text '{"rules":[{"rulePriority":1,"selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}'
+```
+
+Then run `aws ecr get-lifecycle-policy` and the local `assessLifecyclePolicy`
+check. The restored policy is expected to fail that check until the safe policy
+is reapplied. No rollback was needed for the 2026-10-25 change; the preview
+reported zero expiring images before and after.
 
 ## Costs and retained resources
 

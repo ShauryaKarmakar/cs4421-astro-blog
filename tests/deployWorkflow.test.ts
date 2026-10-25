@@ -418,11 +418,9 @@ describe('repository hygiene contracts', () => {
     expect(policyIndex).toBeLessThan(buildIndex);
   });
 
-  it('passes the optional alarm topic to both stack deployments', () => {
-    expect(workflow).toContain(
-      'ALARM_TOPIC_ARN: ${{ vars.ALARM_TOPIC_ARN }}',
-    );
-    expect(workflow.match(/-c alarmTopicArn="\$ALARM_TOPIC_ARN"/g)).toHaveLength(2);
+  it('leaves monitoring ownership out of the application deployment workflow', () => {
+    expect(workflow).not.toContain('ALARM_TOPIC_ARN');
+    expect(workflow).not.toContain('-c alarmTopicArn');
   });
 
   it('records the published digest and verifies the running task uses it', () => {

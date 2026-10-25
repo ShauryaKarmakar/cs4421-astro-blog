@@ -20,3 +20,10 @@ Consult these guides before working on related tasks:
 - [Adding or managing content](https://docs.astro.build/en/guides/content-collections/)
 - [Adding styles or using Tailwind](https://docs.astro.build/en/guides/styling/)
 - [Supporting multiple languages](https://docs.astro.build/en/guides/internationalization/)
+
+## Commit attribution
+
+Never add assistant or tool attribution to commits or pull requests in this
+repository. Do not include "Generated with Codebuff", a
+`Co-Authored-By: Codebuff` trailer, or any equivalent credit. The repository
+owner is the sole author and committer.

@@ -7,11 +7,13 @@ separates three things that are easy to conflate:
 - **verified** — a named check or read-only AWS call produced evidence;
 - **outstanding** — not done yet, with the exact remaining action.
 
-All AWS facts below come from read-only calls (`Describe*`, `List*`,
+Most AWS facts below come from read-only calls (`Describe*`, `List*`,
 `FilterLogEvents`, Logs Insights, the ECR lifecycle-policy preview, and public
 HTTPS `GET` requests) made on 2026-10-25. Starting the preview evaluates the
-policy but expires nothing. No deployment, no resource change, and no Rollback
-Drill was performed while preparing this report.
+policy but expires nothing. The separate monitoring-stack deployment and the
+manual alarm-state notification test were approved writes recorded in section
+4. No application deployment, image push, migration, or Rollback Drill was
+performed while preparing this report.
 
 ## Summary
 
@@ -20,7 +22,7 @@ Drill was performed while preparing this report.
 | 1 | Automated container CD (tests, Docker build, immutable ECR push, ECS rollout) | **Met** by reusing `.github/workflows/deploy.yml`; tests now run in that workflow |
 | 2 | Semantic versioning distinct from immutable image identity | **Partially met** — workflow now enforces semver tags and records digests; `v1.1.0` is the release candidate; no semver-tagged image exists yet and `v1.0.0`/`v1` remain unreconciled |
 | 3 | ECS application reachable through the load balancer, `/api/health` works | **Met for `v1`**, verified through CloudFront. Blog SSR fix is committed and validated locally; production stays broken until the next release |
-| 4 | CloudWatch observability: structured logs, Logs Insights, metrics and alarms | **Partially met** — logs and Logs Insights verified; four alarms, an error metric filter, and optional SNS action support are in CDK (not deployed; no subscription) |
+| 4 | CloudWatch observability: structured logs, Logs Insights, metrics and alarms | **Met for deployment; partial for proof** — logs and Logs Insights verified; four alarms and an error metric filter are deployed in `UniBudgetStack-Monitoring` and `OK`; CloudWatch executed the SNS action, but inbox receipt and a real threshold crossing are unproven |
 | 5 | Rollback Drill 2 | **Outstanding — not executed.** Detailed runbook at [rollback-drill-2.md](rollback-drill-2.md); no timings claimed |
 | 6 | Outage lifecycle with a blameless post-mortem | **Met as documentation**; template included; no live exercise |
 | 7 | Release strategy comparison and the strategy actually used | **Met** — ECS rolling with circuit-breaker rollback |
@@ -144,13 +146,14 @@ git push origin v1.1.0
 
 The image becomes `...:v1.1.0` with a new digest; the tag and the commit
 together answer "which code is running". `v1.1.0` has **not** been released,
-and no `v1.1.0` image exists in ECR. Release contents still need a successful
-CI run, the ECR policy fix, and an approved deployment before tagging.
+and no `v1.1.0` image exists in ECR. The ECR policy correction is complete
+and merge-commit CI passed; an approved deployment is still required before
+tagging.
 
 ### ECR retention and the rollback window
 
 ECR repository: `unibudgetstack-applicationrepository13e54097-nb3o4t9o4cok`
-in **us-east-1**. The live policy (verified 2026-10-25, read-only) is:
+in **us-east-1**. The policy audited before correction was:
 
 ```json
 {"rules":[{"rulePriority":1,"selection":
@@ -158,35 +161,29 @@ in **us-east-1**. The live policy (verified 2026-10-25, read-only) is:
   "action":{"type":"expire"}}]}
 ```
 
-This is **not** the policy declared in `hello-cdk/lib/cdk-stack.ts` (tagged
+That was **not** the policy declared in `hello-cdk/lib/cdk-stack.ts` (tagged
 `*` / 10, untagged / 10). The `v1` push left three manifests in ECR: the
 tagged OCI index, its 120.7 MB platform manifest, and a 1.5 KB attestation.
 With `tagStatus:"any"` and a count of five, two releases already produce six
-manifests, so the rule starts expiring the oldest images. The rollback history
-is then one or two releases, not ten.
+manifests, so the rule would start expiring the oldest images. The rollback
+history would then be one or two releases, not ten.
 
-Lifecycle policy preview of the live policy (started and read read-only):
+On 2026-10-25 the authorized correction was applied through the ECR API, not
+through CloudFormation. The live policy is now tagged `*`/10 plus untagged/10;
+the read-back matches the policy generated from the merged CDK code. The local
+preflight returns `safe: true`, and all three existing manifests remain:
 
 | Field | Result |
 | --- | --- |
-| Status | `COMPLETE` |
+| Preview status after apply | `COMPLETE` |
 | Expiring images | **0** |
 | Images in repository | 3 manifests: `v1` (`sha256:1a68b6ef…`, 120.7 MB), plus two untagged (same-size platform manifest and a 1.5 KB attestation) |
-| Last policy evaluation | 2026-10-25T13:17:41+00:00 |
+| Policy verification | Read-back matches the merged CDK policy byte-for-byte |
 
-The preview is empty today only because the repository holds fewer than five
-manifests. It does **not** validate the proposed policy: ECR has no dry-run
-API for an unapplied policy. The proposed policy is safer and must be applied
-by a stack deployment (requires approval); it is not applied now.
-
-Ordering risk: the workflow builds and pushes the image **before** `cdk
-deploy`, so the next push would still land under the live `any`/5 rule. ECR
-evaluates lifecycle policies about once a day, and the same workflow run
-replaces the policy shortly after the push, but that is a race. The workflow
-now performs a read-only policy assessment before the build and fails if the
-live policy is not ten-tagged/ten-untagged with no `any` rule. Apply the
-stack's lifecycle policy before the next release; do not rely on the daily
-evaluation to miss the new manifests.
+The ECR policy change is not reflected in the deployed CloudFormation
+template yet. A later `cdk diff` will show a pending repository update until an
+approved stack deployment reconciles it. The workflow's read-only preflight
+remains in place and fails before the build if the live policy becomes unsafe.
 
 ## 3. ECS application availability
 
@@ -200,8 +197,14 @@ Verified on 2026-10-25 through the public CloudFront URL
 | Primary deployment | `PRIMARY`, `rolloutState: COMPLETED` |
 | Running task definition | `UniBudgetStackApplicationTask3DB06674:3` |
 | Running image | `...:v1` |
+| `GET /api/live` | **200** |
 | `GET /api/health` | **200** `{"status":"ok"}` in 0.375 s |
 | `GET /login` | **200** in 0.133 s |
+| Unknown blog slug | **500** — same stale-image defect |
+| CloudFront distribution | `E30KFH719MS9Z0`, `Deployed`, HTTP-to-HTTPS redirect |
+| CloudFront origin | Stack ALB DNS; ALB ingress only from prefix list `pl-3b927c52` |
+| CloudFront cache | `Managed-CachingDisabled`; `Managed-AllViewer` |
+| Minimum viewer TLS | `TLSv1`; see [cloudfront-tls-plan.md](cloudfront-tls-plan.md) for the separate proposal |
 
 The public path is CloudFront → ALB → target group. The ALB security group
 accepts traffic only from the CloudFront origin-facing managed prefix list, so
@@ -290,32 +293,41 @@ CloudWatch. This is a gap in evidence, not a claim that logging is broken.
 
 ### Alarms
 
-**Implemented in CDK, not deployed.** `hello-cdk/lib/cdk-stack.ts` now defines
-four alarms plus one JSON metric filter. It can attach an existing,
-operator-managed SNS topic through `alarmTopicArn`/`ALARM_TOPIC_ARN`; it never
-creates a topic or invents a subscription. The live account still has no
-alarms or topic, so detection remains manual until an approved deployment and
-subscription are completed.
+**Deployed in a separate stack.** `hello-cdk/lib/monitoring-stack.ts` defines
+four alarms plus one JSON metric filter and imports the existing log group,
+target-group dimensions, and operator-managed SNS topic. It never creates a
+topic, log group, ECS, ECR, or IAM resource. Change set
+`unibudget-monitoring-20261025-2` created the stack; `-3` replaced the initial
+`RunningTaskCount` alarm with `LiveTaskCount` after the former produced a false
+alarm because it requires Container Insights. The final stack is
+`UPDATE_COMPLETE`, all four alarms are `OK`, and the metric filter is present.
+`UniBudgetStack` defines no alarm or metric-filter resources; its test asserts
+zero, so an application release cannot recreate the duplicates.
 
 | Alarm | Metric | Threshold / evaluation | Rationale |
 | --- | --- | --- | --- |
 | Target 5xx | `HTTPCode_Target_5XX_Count` (Sum, 5 min) | `> 5` for 2 periods | Catches a failing release after the target group has already marked tasks healthy |
 | Unhealthy targets | `UnHealthyHostCount` (Maximum, 1 min) | `> 0` for 2 periods | The load balancer is routing away from a task; precedes a full outage |
-| Running tasks | `RunningTaskCount` (Average, 1 min) | `< desiredCount` for 3 periods | Service capacity is below the requested count; no datapoint is treated as breaching |
+| Live tasks | `LiveTaskCount` (Average, 1 min) | `< desiredCount` for 3 periods | Service capacity is below the requested count; no datapoint is treated as breaching. LiveTaskCount does not require Container Insights |
 | Structured errors | `StructuredErrorCount` (Sum, 5 min) | `> 5` for 2 periods | Application errors that do not necessarily surface as 5xx yet |
 
 The metric filter matches `{ $.level = "error" }` on
 `/unibudget/ecs/application` and publishes `UniBudget/Application` →
 `StructuredErrorCount`. `TreatMissingData` is `notBreaching` for the 5xx,
-unhealthy-target, and error alarms, and `breaching` for task count. The task
-count alarm is omitted while `desiredCount` is `0` (bootstrap), so an
-intentional zero does not alarm.
+unhealthy-target, and error alarms, and `breaching` for task count. The separate
+stack requires a positive `desiredCount` and always creates the task-count
+alarm, so a manual scale to zero would alarm.
 
 Synthesis and tests: `npx cdk synth` produces the four
-`AWS::CloudWatch::Alarm` resources and the metric filter; the CDK suite passes
-20/20, including threshold, dimension, filter-pattern, no-action, and
-configured-topic assertions. Not observed in CloudWatch, because nothing was
-deployed.
+`AWS::CloudWatch::Alarm` resources and the metric filter in the monitoring
+template; the CDK suite passes **27/27**, including threshold, dimension,
+filter-pattern, no-action, configured-topic, and no-ECS/ECR/IAM assertions. The
+explicit alarm names are `UniBudgetStack-Monitoring-Target5xx`,
+`-UnhealthyTargets`, `-LiveTaskCount`, and `-StructuredErrors`, which match the
+live SNS topic policy's `UniBudgetStack-*` source condition. A manual
+`StructuredErrors` state transition recorded
+`Successfully executed action arn:aws:sns:...`; inbox receipt was not
+independently verified, and no real metric threshold crossing was generated.
 
 Thresholds are intentionally low for a single-task service. A p95 latency
 alarm (`TargetResponseTime > 2 s` for 3 periods) and a `HealthyHostCount < 1`
@@ -392,10 +404,11 @@ Status: **not executed; no timings or pass claim.**
 
 ### Detection
 
-- CloudWatch alarms (once configured), ALB target health, and the synthetic
+- The four deployed CloudWatch alarms, ALB target health, and the synthetic
   `/api/health` probe are the primary signals.
 - Logs Insights on `/unibudget/ecs/application` for `"level":"error"` finds
-  application-side failures; the log group currently has no alarm attached.
+  application-side failures; the deployed metric filter feeds
+  `StructuredErrorCount` and alerts above five events in ten minutes.
 - A user report is a valid detection source, but should not be the only one.
 
 ### Triage
@@ -456,16 +469,20 @@ Action items (owner, due date):
 - Triage: `/api/health` and `/login` return 200, so the process and database
   are healthy; the failure is route-specific and matches the `Astro.props`
   defect fixed in `src/pages/blog/[...slug].astro`.
-- Mitigation: deploy an image containing the committed SSR fix under the next
-  release tag. Until then, the route remains broken in `v1`.
+- Mitigation: the SSR fix is merged (PR #40, `4ce73f9`), and structured
+  logging is merged at `a919b96`; CI run 40218210613 passed on that commit.
+  Deploy an image built from that commit plus the reviewed monitoring
+  reconciliation under the next release tag. Until then, the route remains
+  broken in `v1`.
 - Contributing factors: no route-level smoke test in the post-deploy check
   (only `/api/health` and `/login`); no alarm on 5xx; the release predates the
   fix.
 - Preventive actions: the post-deploy blog-route check is now in
-  `.github/workflows/deploy.yml`; the 5xx, unhealthy-target, task-count, and
-  structured-error alarms are now in CDK; the route regression tests remain in
-  the suite. The alarms have no notification action and are not deployed yet,
-  so detection is still manual until the next stack deployment.
+  `.github/workflows/deploy.yml`; the 5xx, unhealthy-target, live-task, and
+  structured-error alarms are deployed in `UniBudgetStack-Monitoring`; the
+  route regression tests remain in the suite. CloudWatch executed the SNS
+  action successfully; inbox receipt and a real threshold crossing are still
+  unproven.
 
 ## 7. Release strategies
 
@@ -499,7 +516,7 @@ the circuit breaker performs the rollback automatically.
 | Container CD | `.github/workflows/deploy.yml`, `Dockerfile`, ECR repository, ECS service | Tests step added; CI suite; running `v1`; deployment `COMPLETED` | Met (manual dispatch by design) |
 | Semver | Semver workflow gate; immutable ECR tags; OCI version/revision labels; digest capture | `v1` tag + digest observed; `v1.1.0` candidate not released; provenance labels not in any image yet | Partial |
 | Availability | CloudFront → ALB → `/api/health`; target group probe; post-deploy blog 200 and unknown-slug 404 checks | Production `/api/health` 200, `/login` 200, `/blog/first-post` **500**; local 200/404; service 1/1 | Met for `v1`; blog route still broken until release |
-| Observability | `/unibudget/ecs/application`, JSON error logs, four alarms + metric filter + optional SNS action | Logs Insights executed (10 rows; 0 structured errors); CDK synth + 20/20 tests; live `describe-alarms` empty until deploy | Partial (alarms not deployed, no subscription) |
+| Observability | `/unibudget/ecs/application`, JSON error logs, separate four-alarm + metric-filter stack, SNS action | Logs Insights executed (10 rows; 0 structured errors); CDK synth + **27/27** tests; monitoring stack `UPDATE_COMPLETE`; four alarms `OK`; alarm history shows successful SNS action | Met for deployment; inbox receipt and real threshold crossing unproven |
 | Rollback Drill 2 | Circuit breaker + procedure above | **Not executed** | Outstanding |
 | Outage lifecycle | Detection/triage/mitigation/post-mortem above | Documentation only | Met as documentation |
 | Release strategies | Rolling + circuit breaker in CDK | CDK synthesis tests; service config | Met |
@@ -509,11 +526,11 @@ the circuit breaker performs the rollback automatically.
 
 1. Execute Rollback Drill 2 in a separate drill account and record timings
    using [rollback-drill-2.md](rollback-drill-2.md).
-2. Deploy the CDK change that adds the four alarms, create and confirm an SNS
-   subscription, grant `cloudwatch.amazonaws.com` publish permission in the
-   topic policy, set `ALARM_TOPIC_ARN`, and confirm a test notification. Until
-   then, detection is manual even though the definitions exist. See
-   [alarms.md](alarms.md).
+2. Verify inbox receipt of the SNS notification and, once a safe non-production
+   method exists, observe one real threshold crossing. Resolve the
+   ECS/task-definition dynamic changes found in the old `UniBudgetStack`
+   no-execute change set; do not execute it, because it would recreate the
+   monitoring resources. See [alarms.md](alarms.md).
 3. Deploy an image containing the blog SSR fix and verify `/blog/<slug>`
    returns 200 and an unknown slug returns 404 in production; the new
    post-deploy checks must pass on that run.

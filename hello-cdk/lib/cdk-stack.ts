@@ -1,6 +1,4 @@
 import * as cdk from 'aws-cdk-lib';
-import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -10,7 +8,6 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as rds from 'aws-cdk-lib/aws-rds';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
-import * as sns from 'aws-cdk-lib/aws-sns';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { Construct } from 'constructs';
 
@@ -40,8 +37,6 @@ export interface UniBudgetStackProps extends cdk.StackProps {
   supabasePort?: string;
   supabaseDatabase?: string;
   cloudFrontOriginPrefixListId?: string;
-  /** Existing, operator-managed SNS topic that receives alarm notifications. */
-  alarmTopicArn?: string;
 }
 
 function isValidDnsHostname(value: string): boolean {
@@ -70,15 +65,6 @@ export class UniBudgetStack extends cdk.Stack {
     }
     if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(imageTag)) {
       throw new Error('imageTag must be a valid container image tag.');
-    }
-    const alarmTopicArn = props.alarmTopicArn?.trim();
-    if (
-      alarmTopicArn &&
-      !/^arn:aws[a-zA-Z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$/.test(
-        alarmTopicArn,
-      )
-    ) {
-      throw new Error('alarmTopicArn must be an SNS topic ARN from this AWS partition.');
     }
     // Never default the pooler hostname. Supabase has regional and
     // project-specific pooler hosts, and a stale default silently connects to
@@ -490,116 +476,9 @@ export class UniBudgetStack extends cdk.Stack {
       },
     });
 
-    // Operational alarms. The stack never creates an SNS topic or invents a
-    // subscription address. When an operator supplies an existing topic ARN,
-    // every alarm is wired to it; otherwise the alarms remain visible in the
-    // console but notify nobody until that action is configured.
-    //
-    // Alarm names are explicit. The operator-managed SNS topic policy only
-    // authorises `sns:Publish` for alarm ARNs under the `UniBudgetStack-`
-    // prefix, and a CloudFormation-generated physical name is not visible in
-    // this template, so that condition could not be checked before deploying.
-    // Stable names also keep the runbook and alarm history references valid
-    // across stack updates.
-    const alarms: cloudwatch.Alarm[] = [];
-    alarms.push(
-      targetGroup.metrics
-        .httpCodeTarget(elbv2.HttpCodeTarget.TARGET_5XX_COUNT, {
-          period: cdk.Duration.minutes(5),
-          statistic: 'Sum',
-        })
-        .createAlarm(this, 'Target5xxAlarm', {
-          alarmName: 'UniBudgetStack-Target5xx',
-          alarmDescription:
-            'More than five 5xx responses from the application targets in ten minutes.',
-          threshold: 5,
-          evaluationPeriods: 2,
-          comparisonOperator:
-            cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-          treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        }),
-    );
-
-    alarms.push(
-      targetGroup.metrics
-        .unhealthyHostCount({
-          period: cdk.Duration.minutes(1),
-          statistic: 'Maximum',
-        })
-        .createAlarm(this, 'UnhealthyTargetsAlarm', {
-          alarmName: 'UniBudgetStack-UnhealthyTargets',
-          alarmDescription:
-            'At least one application target reported unhealthy for two consecutive minutes.',
-          threshold: 0,
-          evaluationPeriods: 2,
-          comparisonOperator:
-            cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-          treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        }),
-    );
-
-    // A bootstrap stack is deliberately scaled to zero, so a task-count alarm
-    // would fire during that intentional state. It is added only once the
-    // stack has a running target count.
-    if (desiredCount > 0) {
-      alarms.push(
-        service
-          .metric('RunningTaskCount', {
-            period: cdk.Duration.minutes(1),
-            statistic: 'Average',
-          })
-          .createAlarm(this, 'RunningTaskCountAlarm', {
-            alarmName: 'UniBudgetStack-RunningTaskCount',
-            alarmDescription: `Fewer than ${desiredCount} ECS tasks are running for three consecutive minutes.`,
-            threshold: desiredCount,
-            evaluationPeriods: 3,
-            comparisonOperator:
-              cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-            // No datapoint means the service emitted none, which is worse than
-            // a low count for an alarm that guards task availability.
-            treatMissingData: cloudwatch.TreatMissingData.BREACHING,
-          }),
-      );
-    }
-
-    // src/lib/serverLogger.ts writes one JSON object per line to stderr, which
-    // the awslogs driver forwards here. An error event is `{"level":"error"}`.
-    new logs.MetricFilter(this, 'ApplicationErrorMetricFilter', {
-      logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.level', '=', 'error'),
-      metricNamespace: 'UniBudget/Application',
-      metricName: 'StructuredErrorCount',
-      defaultValue: 0,
-    });
-    alarms.push(
-      new cloudwatch.Metric({
-        namespace: 'UniBudget/Application',
-        metricName: 'StructuredErrorCount',
-        statistic: 'Sum',
-        period: cdk.Duration.minutes(5),
-      }).createAlarm(this, 'StructuredErrorAlarm', {
-        alarmName: 'UniBudgetStack-StructuredErrors',
-        alarmDescription:
-          'More than five structured error log events in ten minutes.',
-        threshold: 5,
-        evaluationPeriods: 2,
-        comparisonOperator:
-          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      }),
-    );
-
-    if (alarmTopicArn) {
-      const alarmTopic = sns.Topic.fromTopicArn(
-        this,
-        'AlarmNotifications',
-        alarmTopicArn,
-      );
-      const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
-      for (const alarm of alarms) {
-        alarm.addAlarmAction(alarmAction);
-      }
-    }
+    // CloudWatch alarms and the application error metric filter are owned by
+    // the separate UniBudgetStack-Monitoring stack. Do not reintroduce them
+    // here: both stacks would publish the same metrics and duplicate alarms.
 
     // The public URL is derived from the distribution, never supplied by hand.
     new cdk.CfnOutput(this, 'ApplicationUrl', {
