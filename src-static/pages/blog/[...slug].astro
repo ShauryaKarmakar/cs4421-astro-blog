@@ -1,0 +1,24 @@
+---
+import { getCollection, getEntry, render } from 'astro:content';
+import BlogPost from '../../../src/layouts/BlogPost.astro';
+
+// Every entry in the collection becomes a real HTML file at
+// `/blog/<id>/index.html`. Nothing is resolved at request time, so a direct
+// visit and a refresh both hit the same pre-built page.
+export async function getStaticPaths() {
+	const posts = await getCollection('blog');
+
+	return posts.map((post) => ({
+		params: { slug: post.id },
+		props: { post },
+	}));
+}
+
+const { post } = Astro.props;
+const { Content } = await render(post);
+const author = await getEntry(post.data.author);
+---
+
+<BlogPost {...post.data} author={author?.data}>
+	<Content />
+</BlogPost>

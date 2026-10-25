@@ -1,0 +1,229 @@
+---
+import { getCollection } from 'astro:content';
+import PageLayout from '../../layouts/PageLayout.astro';
+import { SITE_DESCRIPTION, SITE_TAGLINE, SITE_TITLE } from '../../consts';
+import FormattedDate from '../FormattedDate.astro';
+
+const posts = (await getCollection('blog'))
+	.sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf())
+	.slice(0, 3);
+const featured = posts[0];
+---
+
+<PageLayout title={`${SITE_TITLE} — ${SITE_TAGLINE}`} description={SITE_DESCRIPTION}>
+	<section class="hero">
+		<p class="eyebrow">{SITE_TITLE}</p>
+		<h1>Know where your money goes, before it goes.</h1>
+		<p class="lead">
+			UniBudget is a small budgeting tool for university students. It keeps one running list of
+			your transactions, holds a monthly budget for the month you are actually in, and shows how
+			much of that budget is left. No spreadsheets that go stale in week three.
+		</p>
+		<div class="actions">
+			<a class="button primary" href="/blog/">Read the writing</a>
+			{
+				featured && (
+					<a class="button secondary" href={`/blog/${featured.id}/`}>
+						Start with “{featured.data.title}”
+					</a>
+				)
+			}
+		</div>
+	</section>
+
+	<section aria-labelledby="features-heading">
+		<h2 id="features-heading">What UniBudget actually does</h2>
+		<p>
+			It is deliberately small. The point is to make a habit easy to keep, not to reproduce a bank
+			dashboard with more charts than you need.
+		</p>
+		<ul class="cards">
+			<li>
+				<h3>Record income and expenses</h3>
+				<p>
+					Add a transaction with an amount, the merchant or description, and a date. Every entry
+					belongs to your own account.
+				</p>
+			</li>
+			<li>
+				<h3>Set one monthly budget</h3>
+				<p>
+					Choose what you intend to spend in a month and change it when the month changes. The
+					budget belongs to the month, not to the whole year.
+				</p>
+			</li>
+			<li>
+				<h3>See what is left</h3>
+				<p>
+					The overall spending figure is calculated from your expenses for the month, so the
+					remaining amount is a subtraction you do not have to repeat.
+				</p>
+			</li>
+		</ul>
+	</section>
+
+	<section aria-labelledby="posts-heading">
+		<h2 id="posts-heading">Recent writing</h2>
+		<p>
+			The blog is where we work through the practical side of student money: what to write down,
+			which costs to expect, and how to keep saving something even in a lean term.
+		</p>
+		<ul class="posts">
+			{
+				posts.map((post) => (
+					<li>
+						<p class="post-date">
+							<FormattedDate date={post.data.pubDate} />
+						</p>
+						<h3>
+							<a href={`/blog/${post.id}/`}>{post.data.title}</a>
+						</h3>
+						<p>{post.data.description}</p>
+					</li>
+				))
+			}
+		</ul>
+		<p class="more">
+			<a href="/blog/">All articles →</a>
+		</p>
+	</section>
+
+	<section aria-labelledby="project-heading">
+		<h2 id="project-heading">About this site</h2>
+		<p>
+			UniBudget is a software engineering project for CS4421 (DevOps). The budgeting application
+			is a server-rendered app with accounts and a database. The pages you are reading now are a
+			separate static site: pre-built HTML, deployed to object storage and served through a CDN.
+			That separation is intentional — the public writing has no login, no cookies and no access
+			to anyone's financial data.
+		</p>
+		<p>
+			Articles here are general information about managing money as a student. They are not
+			personalised financial, tax or investment advice. If a decision involves real money at
+			stake, talk to someone qualified who knows your situation.
+		</p>
+	</section>
+</PageLayout>
+
+<style>
+	.hero {
+		padding-bottom: 1.5em;
+		border-bottom: 1px solid rgb(var(--gray-light));
+		margin-bottom: 2.5em;
+	}
+	.eyebrow {
+		margin: 0 0 0.75em;
+		color: var(--accent);
+		font-size: 0.75em;
+		font-weight: 700;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+	}
+	h1 {
+		margin-bottom: 0.4em;
+		font-size: clamp(2.2rem, 6vw, 3.05em);
+		letter-spacing: -0.02em;
+	}
+	.lead {
+		margin-bottom: 1.5em;
+		color: rgb(var(--gray));
+		font-size: 1.15em;
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+	}
+	.button {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.7em 1.2em;
+		border: 1px solid rgb(var(--gray-light));
+		border-radius: 999px;
+		font-size: 0.95em;
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.button.primary {
+		border-color: transparent;
+		background: var(--accent);
+		color: #fff;
+	}
+	.button.primary:hover {
+		color: #fff;
+		background: var(--accent-dark);
+	}
+	.button.secondary {
+		background: #fff;
+		color: rgb(var(--gray-dark));
+	}
+	.button.secondary:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+	section + section {
+		margin-top: 2.75em;
+	}
+	.cards {
+		display: grid;
+		gap: 1rem;
+		margin: 1.5em 0 0;
+		padding: 0;
+		list-style: none;
+	}
+	.cards li {
+		padding: 1.25em 1.4em;
+		border: 1px solid rgb(var(--gray-light));
+		border-radius: 14px;
+		background: #fff;
+	}
+	.cards h3 {
+		margin: 0 0 0.4em;
+		font-size: 1.05em;
+	}
+	.cards p {
+		margin: 0;
+		color: rgb(var(--gray));
+		font-size: 0.95em;
+	}
+	.posts {
+		display: grid;
+		gap: 1.25rem;
+		margin: 1.5em 0 0;
+		padding: 0;
+		list-style: none;
+	}
+	.posts li {
+		padding-left: 1.2em;
+		border-left: 3px solid rgb(var(--gray-light));
+	}
+	.posts h3 {
+		margin: 0.15em 0 0.3em;
+		font-size: 1.2em;
+	}
+	.posts h3 a {
+		color: rgb(var(--black));
+		text-decoration: none;
+	}
+	.posts h3 a:hover {
+		color: var(--accent);
+	}
+	.posts p {
+		margin: 0;
+		color: rgb(var(--gray));
+		font-size: 0.95em;
+	}
+	.post-date {
+		font-size: 0.8em;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+	}
+	.more {
+		margin-top: 1.25em;
+		font-size: 0.95em;
+	}
+	.more a {
+		font-weight: 600;
+		text-decoration: none;
+	}
+</style>

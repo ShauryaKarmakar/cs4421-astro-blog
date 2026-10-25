@@ -1,0 +1,241 @@
+name: Deploy Static Blog
+
+# Builds the static Astro site with `astro.config.static.mjs` and publishes it to
+# the existing S3 bucket behind the existing CloudFront distribution.
+#
+# This workflow is deliberately separate from `deploy.yml`, which owns the
+# server-rendered application. It never runs CDK, never touches ECS, the ALB,
+# the database, or the SSR CloudFront distribution, and it uses no long-lived
+# AWS credentials: it assumes the existing GitHub OIDC role.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'src-static/**'
+      - 'public/**'
+      - 'astro.config.static.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/verifyStaticBuild.mjs'
+      - 'scripts/verifyStaticSite.mjs'
+      - '.github/workflows/deploy-static.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: unibudget-static-site
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+
+  # Verified static deployment targets. These are hard-coded so a typo or a
+  # changed repository variable cannot redirect the upload to another bucket,
+  # and so the workflow fails if the live resources stop matching.
+  STATIC_BUCKET: staticsitestack-sitebucket397a1860-33rkrycbsdvl
+  STATIC_DISTRIBUTION_ID: E2JVO3G1WG2Q2T
+  STATIC_SITE_HOST: d2eip6kpluaijf.cloudfront.net
+  STATIC_SITE_URL: https://d2eip6kpluaijf.cloudfront.net
+  # The SSR distribution. Named only so the workflow can refuse to touch it.
+  SSR_DISTRIBUTION_ID: E30KFH719MS9Z0
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # The existing OIDC role trusts the production environment; reusing it
+    # keeps the static deployment on an already-approved identity.
+    environment: production
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Check Application Types
+        run: npm run check
+
+      - name: Check Static Site Types
+        run: npm run check:static
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run Tests
+        run: npm test -- --run
+
+      - name: Build Static Site
+        run: npm run build:static
+
+      - name: Verify Static Build Output
+        run: node scripts/verifyStaticBuild.mjs
+
+      - name: Configure AWS Credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: unibudget-static-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate Static Deployment Target
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION AWS_ACCOUNT_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name must be configured for this deployment."
+              exit 1
+            fi
+          done
+          if ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::AWS_ACCOUNT_ID must be a 12-digit AWS account ID."
+            exit 1
+          fi
+          if [ -z "${AWS_DEPLOY_ROLE_ARN:-}" ]; then
+            echo "::error::AWS_DEPLOY_ROLE_ARN must be configured for this deployment."
+            exit 1
+          fi
+          if [ "$STATIC_DISTRIBUTION_ID" = "$SSR_DISTRIBUTION_ID" ]; then
+            echo "::error::The static workflow must never target the SSR distribution."
+            exit 1
+          fi
+
+          caller_account=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$caller_account" != "$AWS_ACCOUNT_ID" ]; then
+            echo "::error::The assumed role is in account $caller_account, not AWS_ACCOUNT_ID ($AWS_ACCOUNT_ID)."
+            exit 1
+          fi
+
+          bucket_region=$(aws s3api get-bucket-location \
+            --bucket "$STATIC_BUCKET" \
+            --query 'LocationConstraint' \
+            --output text)
+          if [ "$bucket_region" != "None" ] && [ "$bucket_region" != "null" ] && [ "$bucket_region" != "us-east-1" ]; then
+            echo "::error::$STATIC_BUCKET is in $bucket_region, not us-east-1; refusing to upload."
+            exit 1
+          fi
+
+          status=$(aws cloudfront get-distribution \
+            --id "$STATIC_DISTRIBUTION_ID" \
+            --query 'Distribution.Status' --output text)
+          enabled=$(aws cloudfront get-distribution \
+            --id "$STATIC_DISTRIBUTION_ID" \
+            --query 'Distribution.DistributionConfig.Enabled' --output text)
+          domain=$(aws cloudfront get-distribution \
+            --id "$STATIC_DISTRIBUTION_ID" \
+            --query 'Distribution.DomainName' --output text)
+          origin=$(aws cloudfront get-distribution \
+            --id "$STATIC_DISTRIBUTION_ID" \
+            --query 'Distribution.DistributionConfig.Origins.Items[0].DomainName' --output text)
+          viewer_policy=$(aws cloudfront get-distribution \
+            --id "$STATIC_DISTRIBUTION_ID" \
+            --query 'Distribution.DistributionConfig.DefaultCacheBehavior.ViewerProtocolPolicy' --output text)
+          error_count=$(aws cloudfront get-distribution \
+            --id "$STATIC_DISTRIBUTION_ID" \
+            --query 'Distribution.DistributionConfig.CustomErrorResponses.Quantity' --output text)
+
+          if [ "$status" != "Deployed" ] || [ "${enabled,,}" != "true" ]; then
+            echo "::error::CloudFront distribution $STATIC_DISTRIBUTION_ID is $status (enabled=$enabled); refusing to deploy."
+            exit 1
+          fi
+          if [ "$domain" != "$STATIC_SITE_HOST" ]; then
+            echo "::error::CloudFront distribution $STATIC_DISTRIBUTION_ID serves $domain, not $STATIC_SITE_HOST."
+            exit 1
+          fi
+          if [ "$origin" != "$STATIC_BUCKET.s3.us-east-1.amazonaws.com" ]; then
+            echo "::error::CloudFront distribution $STATIC_DISTRIBUTION_ID does not use $STATIC_BUCKET as its origin."
+            exit 1
+          fi
+          if [ "$viewer_policy" != "redirect-to-https" ]; then
+            echo "::error::The static distribution does not redirect HTTP to HTTPS (ViewerProtocolPolicy=$viewer_policy)."
+            exit 1
+          fi
+          if [ "$error_count" = "None" ] || [ "$error_count" -lt 2 ]; then
+            echo "::error::The static distribution must map both 403 and 404 to /404.html; unknown paths would otherwise expose the S3 error document."
+            exit 1
+          fi
+
+          echo "Deploying to s3://$STATIC_BUCKET via $STATIC_SITE_URL ($STATIC_DISTRIBUTION_ID)."
+
+      - name: Upload Static Build
+        run: |
+          set -euo pipefail
+          # Non-destructive upload: existing objects are updated, unrelated
+          # objects are never deleted. HTML and feeds revalidate so content
+          # updates appear as soon as the invalidation completes; hashed
+          # assets are immutable and can be cached for a year.
+          aws s3 cp dist-static "s3://$STATIC_BUCKET" \
+            --recursive \
+            --exclude "*" \
+            --include "*.html" \
+            --cache-control "public, max-age=0, must-revalidate" \
+            --only-show-errors
+          aws s3 cp dist-static "s3://$STATIC_BUCKET" \
+            --recursive \
+            --exclude "*" \
+            --include "*.xml" \
+            --cache-control "public, max-age=0, must-revalidate" \
+            --only-show-errors
+          aws s3 cp dist-static "s3://$STATIC_BUCKET" \
+            --recursive \
+            --exclude "*.html" \
+            --exclude "*.xml" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --only-show-errors
+
+      - name: Report Deployed Objects Missing From This Build
+        run: |
+          set -euo pipefail
+          # Nothing is deleted automatically. This report exists so stale pages
+          # from removed articles are visible and can be deleted deliberately.
+          aws s3api list-objects-v2 \
+            --bucket "$STATIC_BUCKET" \
+            --query 'Contents[].Key' \
+            --output text | tr '\t' '\n' | tr -d '\r' | sort > "$RUNNER_TEMP/deployed.txt"
+          (cd dist-static && find . -type f | sed 's|^\./||' | sort) > "$RUNNER_TEMP/built.txt"
+          stale=$(comm -23 "$RUNNER_TEMP/deployed.txt" "$RUNNER_TEMP/built.txt")
+          if [ -n "$stale" ]; then
+            while IFS= read -r key; do
+              echo "::warning::Deployed but not in this build (left in place): $key"
+            done <<<"$stale"
+          else
+            echo "No stale objects: every deployed key comes from this build."
+          fi
+
+      - name: Invalidate CloudFront
+        id: invalidation
+        run: |
+          set -euo pipefail
+          invalidation_id=$(aws cloudfront create-invalidation \
+            --distribution-id "$STATIC_DISTRIBUTION_ID" \
+            --paths "/*" \
+            --query 'Invalidation.Id' \
+            --output text)
+          echo "invalidation_id=$invalidation_id" >> "$GITHUB_OUTPUT"
+          aws cloudfront wait invalidation-completed \
+            --distribution-id "$STATIC_DISTRIBUTION_ID" \
+            --id "$invalidation_id"
+          echo "Invalidation $invalidation_id completed."
+
+      - name: Verify Live Static Site
+        env:
+          INVALIDATION_ID: ${{ steps.invalidation.outputs.invalidation_id }}
+        run: |
+          set -euo pipefail
+          echo "Invalidation $INVALIDATION_ID completed; verifying $STATIC_SITE_URL"
+          node scripts/verifyStaticSite.mjs "$STATIC_SITE_URL"
