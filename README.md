@@ -67,8 +67,10 @@ through `SUPABASE_CA_CERT`; the CDK tasks read those values from AWS Secrets
 Manager. Never commit credentials, certificates, or `.env` files.
 
 The application fails closed in production if it connects as a role other than
-`unibudget_app`. `/api/health` performs a bounded `SELECT 1` and is used by both
-the container and ALB health checks.
+`unibudget_app`. `/api/health` performs a bounded `SELECT 1` and is the ALB
+readiness probe; `/api/live` answers from the process alone and is the ECS
+container liveness probe, so a database outage drains the target group
+without replacing healthy tasks.
 
 Deployment is manual through the OIDC-based GitHub Actions workflow described
 in [deployment and migration guidance](./docs/deployment.md). The original RDS

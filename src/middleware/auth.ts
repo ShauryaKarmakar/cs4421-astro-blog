@@ -7,10 +7,11 @@ import { getSessionCookie, validateSession } from '../lib/session';
 export const onRequest = defineMiddleware(async (context, next) => {
   const pathname = new URL(context.request.url).pathname;
 
-  // The health endpoint reports dependency health itself, so it must reach its
-  // handler even when the database is unreachable. The role gate below would
-  // otherwise replace the health payload with a generic 503.
-  if (pathname === '/api/health') {
+  // The health endpoints report their own state, so they must reach their
+  // handlers even when the database is unreachable. Readiness (/api/health)
+  // checks PostgreSQL and liveness (/api/live) deliberately does not; the role
+  // gate below would otherwise replace either payload with a generic 503.
+  if (pathname === '/api/health' || pathname === '/api/live') {
     return next();
   }
 

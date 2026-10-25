@@ -21,6 +21,14 @@ on:
         required: true
         type: boolean
         default: false
+      recoveryPointReference:
+        description: Recorded Supabase backup or PITR restore point reference; required for a normal deployment
+        required: false
+        type: string
+      recoveryPointTimestamp:
+        description: UTC timestamp (YYYY-MM-DDTHH:MM:SSZ) recorded for that restore point; required for a normal deployment
+        required: false
+        type: string
 
 permissions:
   id-token: write
@@ -38,6 +46,8 @@ env:
   STACK_NAME: UniBudgetStack
   IMAGE_TAG: ${{ inputs.imageTag }}
   DESIRED_COUNT: ${{ inputs.desiredCount }}
+  RECOVERY_POINT_REFERENCE: ${{ inputs.recoveryPointReference }}
+  RECOVERY_POINT_TIMESTAMP: ${{ inputs.recoveryPointTimestamp }}
 
 jobs:
   deploy:
@@ -81,9 +91,52 @@ jobs:
           # APPLICATION_URL or CERTIFICATE_ARN variable is required. A migration
           # needs an explicit, human-confirmed recovery point because the
           # migration runner is forward-only.
-          if [ "${{ inputs.bootstrapOnly }}" != "true" ] && [ "${{ inputs.recoveryPlanVerified }}" != "true" ]; then
-            echo "::error::Confirm a verified, restorable Supabase backup or PITR restore point before migrating."
-            exit 1
+          #
+          # The reference and timestamp identify the exact restore point this run
+          # was approved against, so the evidence outlives the run. They are an
+          # operator attestation: the workflow records them but cannot verify
+          # restorability without Supabase credentials it deliberately does not
+          # hold.
+          if [ "${{ inputs.bootstrapOnly }}" != "true" ]; then
+            if [ "${{ inputs.recoveryPlanVerified }}" != "true" ]; then
+              echo "::error::Confirm a verified, restorable Supabase backup or PITR restore point before migrating."
+              exit 1
+            fi
+            if [ -z "${RECOVERY_POINT_REFERENCE:-}" ] || [ -z "${RECOVERY_POINT_TIMESTAMP:-}" ]; then
+              echo "::error::recoveryPointReference and recoveryPointTimestamp are required for a normal deployment. Record the restore point before migrating."
+              exit 1
+            fi
+            if ! [[ "$RECOVERY_POINT_REFERENCE" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$ ]]; then
+              echo "::error::recoveryPointReference must be 8-128 characters using letters, digits, dot, underscore, colon, slash, or hyphen."
+              exit 1
+            fi
+            case "${RECOVERY_POINT_REFERENCE,,}" in
+              *todo*|*tbd*|*changeme*|*change-me*|*unknown*|*placeholder*|*n/a*|*none*)
+                echo "::error::recoveryPointReference looks like a placeholder; record the real restore point reference."
+                exit 1
+                ;;
+            esac
+            if ! [[ "$RECOVERY_POINT_TIMESTAMP" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+              echo "::error::recoveryPointTimestamp must be a UTC timestamp such as 2026-10-23T18:30:00Z."
+              exit 1
+            fi
+            if ! recovery_epoch=$(date -u -d "$RECOVERY_POINT_TIMESTAMP" +%s 2>/dev/null); then
+              echo "::error::recoveryPointTimestamp is not a valid calendar timestamp."
+              exit 1
+            fi
+            if [ "$recovery_epoch" -gt "$(date -u +%s)" ]; then
+              echo "::error::recoveryPointTimestamp is in the future; record the actual restore point."
+              exit 1
+            fi
+            {
+              echo "### Recovery attestation"
+              echo ""
+              echo "- Restore point: \`$RECOVERY_POINT_REFERENCE\`"
+              echo "- Recorded at: \`$RECOVERY_POINT_TIMESTAMP\`"
+              echo "- Restore verified out of band: yes (attested by the operator)"
+              echo ""
+              echo "This record is an operator attestation. The workflow does not verify restorability automatically."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Configure AWS Credentials with OIDC
@@ -130,6 +183,11 @@ jobs:
 
       - name: Install Application Dependencies
         run: npm ci
+
+      # The same suite CI runs on main. A failing test stops the deployment
+      # before any image is built or any AWS resource is changed.
+      - name: Run Tests
+        run: npm test -- --run
 
       - name: Install CDK Dependencies
         run: npm ci
@@ -233,6 +291,8 @@ jobs:
           CLOUDFRONT_DOMAIN: ${{ steps.outputs.outputs.cloudfront_domain_name }}
           APPLICATION_URL: ${{ steps.outputs.outputs.application_url }}
           LOAD_BALANCER_DNS: ${{ steps.outputs.outputs.load_balancer_dns }}
+          CLUSTER: ${{ steps.outputs.outputs.cluster }}
+          SERVICE: ${{ steps.outputs.outputs.service }}
         run: |
           set -euo pipefail
           if [ -z "$DISTRIBUTION_ID" ] || [ -z "$CLOUDFRONT_DOMAIN" ] || [ -z "$LOAD_BALANCER_DNS" ]; then
@@ -277,22 +337,149 @@ jobs:
           # Host), all cookies (the session cookie), and all query strings.
           require_config "cache policy" "$(jq -r '.DefaultCacheBehavior.CachePolicyId' <<<"$config")" "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
           require_config "origin request policy" "$(jq -r '.DefaultCacheBehavior.OriginRequestPolicyId' <<<"$config")" "216adef6-5c7f-47e4-b989-5492eafa07d3"
+          # A cache behavior could re-enable caching or route some paths to a
+          # different origin, a custom error response could turn an origin
+          # failure into a 200 page, and an edge function could synthesize a
+          # response without contacting the origin at all. The CDK distribution
+          # defines none of them, so any presence is drift and fails closed.
+          require_config "cache behavior count" "$(jq -r '(.CacheBehaviors.Items // []) | length' <<<"$config")" "0"
+          require_config "custom error response count" "$(jq -r '(.CustomErrorResponses.Items // []) | length' <<<"$config")" "0"
+          require_config "CloudFront function association count" "$(jq -r '(.DefaultCacheBehavior.FunctionAssociations.Items // []) | length' <<<"$config")" "0"
+          require_config "Lambda@Edge association count" "$(jq -r '(.DefaultCacheBehavior.LambdaFunctionAssociations.Items // []) | length' <<<"$config")" "0"
           methods=$(jq -r '.DefaultCacheBehavior.AllowedMethods | (.Items // []) | sort | join(",")' <<<"$config")
           if [ "$methods" != "DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT" ]; then
             echo "::error::CloudFront allowed methods are $methods; POST, PUT, PATCH, and DELETE must reach the application."
             exit 1
           fi
-          http_code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-            --retry 5 --retry-delay 3 --retry-connrefused \
-            "http://$CLOUDFRONT_DOMAIN/" || true)
+          # Exercise the public HTTPS path before any image is pushed or a
+          # migration starts. The redirect check above is answered by CloudFront
+          # at the edge, so on its own it proves nothing about the origin. Only
+          # a real response from the application proves delivery works.
+          service_state=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --query 'services[0].{desired:desiredCount,running:runningCount}' \
+            --output json)
+          current_desired=$(jq -r '.desired // empty' <<<"$service_state")
+          running_count=$(jq -r '.running // empty' <<<"$service_state")
+          if ! [[ "$current_desired" =~ ^[0-9]+$ ]] || ! [[ "$running_count" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not read the ECS service state; refusing to migrate without verifying the origin."
+            exit 1
+          fi
+
+          login_path=/login
+          login_http_url="http://$CLOUDFRONT_DOMAIN$login_path"
+          login_https_url="https://$CLOUDFRONT_DOMAIN$login_path"
+          response_dir=$(mktemp -d)
+          trap 'rm -rf "$response_dir"' EXIT
+
+          request() {
+            local label=$1 url=$2
+            curl --silent --show-error --max-redirs 0 \
+              --proto-redir '=https' \
+              --tlsv1.2 --connect-timeout 15 --max-time 30 \
+              --retry 3 --retry-delay 3 --retry-connrefused \
+              --dump-header "$response_dir/$label.headers" \
+              --output "$response_dir/$label.body" \
+              --write-out '%{http_code} %{redirect_url}' \
+              "$url"
+          }
+
+          # The plain HTTP entry point must redirect to this distribution's own
+          # HTTPS hostname and the same path; an off-host redirect fails here.
+          if ! http_result=$(request http "$login_http_url"); then
+            echo "::error::$login_http_url could not be reached."
+            exit 1
+          fi
+          read -r http_code http_redirect <<<"$http_result"
           case "$http_code" in
-            301|302|307|308) ;;
+            301|302|303|307|308) ;;
             *)
-              echo "::error::http://$CLOUDFRONT_DOMAIN returned $http_code instead of redirecting to HTTPS."
+              echo "::error::$login_http_url returned $http_code instead of redirecting to HTTPS."
               exit 1
               ;;
           esac
-          echo "CloudFront serves https://$CLOUDFRONT_DOMAIN from $LOAD_BALANCER_DNS with caching disabled."
+          if [ "$http_redirect" != "$login_https_url" ]; then
+            echo "::error::CloudFront redirected to '$http_redirect' instead of $login_https_url."
+            exit 1
+          fi
+
+          # Follow at most two HTTPS redirects, and only on the expected
+          # CloudFront hostname. The final response must be the application's
+          # login page; an origin 403 or any other 5xx never counts as success.
+          if ! https_result=$(request https "$http_redirect"); then
+            echo "::error::$login_https_url could not be reached over HTTPS."
+            exit 1
+          fi
+          read -r login_code login_redirect <<<"$https_result"
+          for _ in 1 2; do
+            case "$login_code" in
+              301|302|303|307|308)
+                if [[ "$login_redirect" != "https://$CLOUDFRONT_DOMAIN/"* ]] || [[ "$login_redirect" == *"@"* ]] || [[ "$login_redirect" =~ [[:space:]] ]]; then
+                  echo "::error::The login page redirected outside https://$CLOUDFRONT_DOMAIN (to '$login_redirect')."
+                  exit 1
+                fi
+                if ! https_result=$(request https "$login_redirect"); then
+                  echo "::error::The login redirect target '$login_redirect' could not be reached."
+                  exit 1
+                fi
+                read -r login_code login_redirect <<<"$https_result"
+                ;;
+              *) break ;;
+            esac
+          done
+
+          # x-amz-cf-id proves the response traversed CloudFront; without it the
+          # body cannot be attributed to this distribution at all.
+          if ! grep -qi '^x-amz-cf-id:' "$response_dir/https.headers"; then
+            echo "::error::$login_https_url did not return a CloudFront response; refusing to treat it as an origin check."
+            exit 1
+          fi
+          x_cache=$(grep -i '^x-cache:' "$response_dir/https.headers" | tail -n 1 | tr -d '\r' || true)
+
+          if [ "$login_code" = "403" ]; then
+            echo "::error::$login_https_url returned HTTP 403; the origin or edge is refusing requests."
+            exit 1
+          fi
+          if [ "$login_code" = "503" ]; then
+            # A service deliberately scaled to zero (the first normal deployment
+            # after bootstrap, or a maintenance window) has no tasks, so the ALB
+            # answers 503 and CloudFront labels it an edge error rather than a
+            # cache miss. Nothing in that response proves the origin delivered
+            # it: CloudFront's own 503 carries the same evidence. The gate
+            # therefore tolerates this state only while the service really is at
+            # zero tasks, and only for a response that carries CloudFront
+            # evidence; neither condition proves origin delivery.
+            if [ "$current_desired" = "0" ] && [ "$running_count" = "0" ]; then
+              if [[ "$x_cache" != *" from cloudfront"* ]]; then
+                echo "::error::The ECS service is scaled to zero, so origin delivery cannot be verified, and $login_https_url did not return the expected CloudFront X-Cache evidence (X-Cache: '${x_cache:-<absent>}'). Deploy the stack with desiredCount >= 1 and re-run, or inspect the X-Cache header on that response."
+                exit 1
+              fi
+              echo "::warning::The ECS service is scaled to zero (desired=0); $login_https_url returned 503 through CloudFront. CloudFront responded for this distribution, but origin delivery is not proven while there are zero running tasks. The migration may proceed; the rollout that follows is the first proof the application can start."
+            else
+              echo "::error::$login_https_url returned HTTP 503 while the service should be running (desired=$current_desired, running=$running_count); refusing to migrate against an unhealthy origin."
+              exit 1
+            fi
+          elif [ "$login_code" != "200" ]; then
+            echo "::error::$login_https_url returned HTTP $login_code instead of the login page."
+            exit 1
+          else
+            if [[ "$x_cache" != *"Miss from cloudfront"* ]]; then
+              echo "::error::$login_https_url was not a CloudFront cache miss; refusing to treat a cached or edge-generated page as the origin."
+              exit 1
+            fi
+            content_type=$(grep -i '^content-type:' "$response_dir/https.headers" | tail -n 1 | tr -d '\r' || true)
+            if [[ "$content_type" != *"text/html"* ]]; then
+              echo "::error::$login_https_url returned '$content_type' instead of an HTML login page."
+              exit 1
+            fi
+            if ! grep -q 'id="loginForm"' "$response_dir/https.body"; then
+              echo "::error::$login_https_url did not return the UniBudget login page; the origin is not serving the application."
+              exit 1
+            fi
+            echo "The origin answered $login_https_url with the UniBudget login page (HTTP 200)."
+          fi
+          echo "CloudFront serves https://$CLOUDFRONT_DOMAIN from $LOAD_BALANCER_DNS with caching disabled; the origin was verified before any migration."
 
       - name: Build and Push Application Image
         if: inputs.bootstrapOnly != true
@@ -320,7 +507,13 @@ jobs:
           image_uri="$REPOSITORY_URI:$IMAGE_TAG"
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
-          docker build -f dockerfile -t "$image_uri" .
+          # The tag is the release version; the commit is recorded as OCI
+          # metadata so the image remains traceable without a second ECR tag
+          # (which would double its lifecycle-policy footprint).
+          docker build -f dockerfile \
+            --build-arg IMAGE_VERSION="$IMAGE_TAG" \
+            --build-arg GIT_REVISION="${GITHUB_SHA:-unknown}" \
+            -t "$image_uri" .
           docker push "$image_uri"
           aws ecr describe-images \
             --repository-name "$repository_name" \
@@ -347,7 +540,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${IMAGE_URI:-}" ]; then
-            echo "::error::The built image URI is empty; refusing to migrate without an explicit image override."
+            echo "::error::The built image URI is empty; refusing to migrate without the image this run built."
             exit 1
           fi
           cluster_status=$(aws ecs describe-clusters \
@@ -388,6 +581,79 @@ jobs:
             "application task execution role" \
             "$(jq -r '.executionRoleArn // empty' <<<"$application_task_json")" \
             "$APPLICATION_TASK_EXECUTION_ROLE_ARN"
+
+          app_container=$(jq -c '.containerDefinitions[] | select(.name == "ApplicationContainer")' <<<"$application_task_json")
+          if [ -z "$app_container" ]; then
+            echo "::error::ApplicationContainer is missing from $APPLICATION_TASK_DEFINITION."
+            exit 1
+          fi
+          # A URL override would bypass the validated PGHOST/PGPORT and could point
+          # the application at a different database than the one being migrated.
+          if jq -e '.environment[] | select(.name | test("(^|_)DATABASE_URL$"))' >/dev/null <<<"$app_container"; then
+            echo "::error::The application task sets a database URL override; its connection must come only from PGHOST, PGPORT, PGDATABASE, PGUSER, and PGPASSWORD."
+            exit 1
+          fi
+          app_environment_names=$(jq -r '[.environment[].name] | sort | join(" ")' <<<"$app_container")
+          expected_app_environment="HOST NODE_ENV PGDATABASE PGHOST PGPORT PGSSLMODE PORT"
+          if [ "$app_environment_names" != "$expected_app_environment" ]; then
+            echo "::error::Application task environment names are [$app_environment_names], expected exactly [$expected_app_environment]. Remove any added variable and deploy the stack again."
+            exit 1
+          fi
+          if [ "$(jq -r '(.environmentFiles // []) | length' <<<"$app_container")" != "0" ]; then
+            echo "::error::Application task uses environmentFiles; remove them so a file cannot override the validated environment."
+            exit 1
+          fi
+          app_environment_value() {
+            jq -r --arg name "$1" \
+              '.environment[] | select(.name == $name) | .value' <<<"$app_container"
+          }
+          require_app_environment() {
+            local name=$1 expected=$2 actual
+            actual=$(app_environment_value "$name")
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::Application task $name is not '$expected'. Deploy the stack with the current Supabase configuration before migrating."
+              exit 1
+            fi
+          }
+          require_app_environment NODE_ENV production
+          require_app_environment HOST 0.0.0.0
+          require_app_environment PORT 8080
+          require_app_environment PGHOST "$SUPABASE_HOST"
+          require_app_environment PGPORT 5432
+          require_app_environment PGDATABASE postgres
+          require_app_environment PGSSLMODE verify-full
+
+          expected_app_secrets="PGPASSWORD PGUSER SUPABASE_CA_CERT"
+          actual_app_secrets=$(jq -r '[.secrets[].name] | sort | join(" ")' <<<"$app_container")
+          if [ "$actual_app_secrets" != "$expected_app_secrets" ]; then
+            echo "::error::Application task secret names are [$actual_app_secrets], expected exactly [$expected_app_secrets]. Only names are shown; secret values are never read here."
+            exit 1
+          fi
+          # The expected value is the stack ARN plus the exact JSON key. A prefix
+          # or wildcard match would let PGUSER and PGPASSWORD swap, or accept a
+          # different secret whose ARN merely contains this one.
+          require_app_secret() {
+            local name=$1 arn=$2 suffix=$3 count actual
+            if [ -z "$arn" ]; then
+              echo "::error::The stack output for $name's secret ARN is empty."
+              exit 1
+            fi
+            count=$(jq --arg name "$name" \
+              '[.secrets[] | select(.name == $name)] | length' <<<"$app_container")
+            if [ "$count" -ne 1 ]; then
+              echo "::error::Application task must reference $name exactly once; found $count."
+              exit 1
+            fi
+            actual=$(jq -r --arg name "$name" \
+              '.secrets[] | select(.name == $name) | .valueFrom' <<<"$app_container")
+            if [ "$actual" != "$arn$suffix" ]; then
+              echo "::error::Application task $name does not reference the expected Secrets Manager ARN and JSON key."
+              exit 1
+            fi
+          }
+          require_app_secret PGUSER "$SUPABASE_APPLICATION_SECRET_ARN" ':username::'
+          require_app_secret PGPASSWORD "$SUPABASE_APPLICATION_SECRET_ARN" ':password::'
+          require_app_secret SUPABASE_CA_CERT "$SUPABASE_CA_SECRET_ARN" ''
 
           task_json=$(aws ecs describe-task-definition \
             --task-definition "$MIGRATION_TASK_DEFINITION" \
@@ -437,8 +703,8 @@ jobs:
             exit 1
           fi
           require_exact_secret() {
-            local name=$1 expected=$2 count actual
-            if [ -z "$expected" ]; then
+            local name=$1 arn=$2 suffix=$3 count actual expected
+            if [ -z "$arn" ]; then
               echo "::error::The stack output for $name's secret ARN is empty."
               exit 1
             fi
@@ -450,23 +716,23 @@ jobs:
             fi
             actual=$(jq -r --arg name "$name" \
               '.secrets[] | select(.name == $name) | .valueFrom' <<<"$container")
-            # A JSON-key reference appends :<key>:: to the secret ARN. The ARN
-            # itself must match the stack output exactly; a substring match
-            # would accept another secret whose name contains the expected one.
-            case "$actual" in
-              "$expected"|"$expected":*::) ;;
-              *)
-                echo "::error::Migration task $name does not reference the expected secret ARN."
-                exit 1
-                ;;
-            esac
+            # A JSON-key reference is exactly <arn>:<key>::, so the expected
+            # value is this stack ARN plus this variable's own key. The exact
+            # comparison rejects a bare ARN, a wildcard suffix, another secret
+            # whose name contains this one, and PGUSER referencing the password
+            # key (or the reverse).
+            expected="$arn$suffix"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::Migration task $name does not reference the expected Secrets Manager ARN and JSON key."
+              exit 1
+            fi
           }
-          require_exact_secret PGUSER "$SUPABASE_MIGRATION_SECRET_ARN"
-          require_exact_secret PGPASSWORD "$SUPABASE_MIGRATION_SECRET_ARN"
-          require_exact_secret APP_DATABASE_PASSWORD "$SUPABASE_APPLICATION_SECRET_ARN"
-          require_exact_secret SUPABASE_CA_CERT "$SUPABASE_CA_SECRET_ARN"
+          require_exact_secret PGUSER "$SUPABASE_MIGRATION_SECRET_ARN" ':username::'
+          require_exact_secret PGPASSWORD "$SUPABASE_MIGRATION_SECRET_ARN" ':password::'
+          require_exact_secret APP_DATABASE_PASSWORD "$SUPABASE_APPLICATION_SECRET_ARN" ':password::'
+          require_exact_secret SUPABASE_CA_CERT "$SUPABASE_CA_SECRET_ARN" ''
 
-          echo "Migration task configuration matches the current host, role ARNs, image override, and exact secret ARNs."
+          echo "Migration task configuration matches the current host, role ARNs, and exact secret ARNs and JSON keys."
 
       - name: Run the One-Off Migration Task
         if: inputs.bootstrapOnly != true
@@ -480,6 +746,9 @@ jobs:
           set -euo pipefail
           task_arn=""
           task_finished="false"
+          temporary_task_definition=""
+          definition_file=$(mktemp)
+          registration_file=$(mktemp)
 
           cleanup() {
             status=$?
@@ -491,20 +760,73 @@ jobs:
                 --task "$task_arn" \
                 --reason "Deployment cancelled or migration step failed" >/dev/null || true
             fi
+            # Deregister only after the one-off task has stopped or was never
+            # started. The revision is never used by the ECS service, so this
+            # cannot change the application rollout or its rollback target.
+            if [ -n "$temporary_task_definition" ]; then
+              if [ -z "$task_arn" ] || [ "$task_finished" = "true" ]; then
+                echo "Deregistering temporary migration task definition $temporary_task_definition."
+                aws ecs deregister-task-definition \
+                  --task-definition "$temporary_task_definition" >/dev/null || \
+                  echo "::warning::Could not deregister $temporary_task_definition."
+              else
+                echo "::warning::Leaving $temporary_task_definition registered because the migration task has not stopped."
+              fi
+            fi
+            rm -f "$definition_file" "$registration_file"
             exit "$status"
           }
           trap cleanup EXIT
           trap 'exit 130' INT TERM
 
+          # ECS container overrides have no image field (the API rejects it with
+          # ParamValidation). Build a one-off revision from the stack's current
+          # migration definition with only its image replaced by the immutable
+          # tag this run built. Roles, environment, secrets, logging, runtime
+          # platform, and command are preserved by the builder.
+          aws ecs describe-task-definition \
+            --task-definition "$MIGRATION_TASK_DEFINITION" \
+            --query 'taskDefinition' \
+            --output json > "$definition_file"
+
+          node scripts/migrationTaskDefinition.mjs \
+            "$definition_file" "$IMAGE_URI" > "$registration_file"
+
+          temporary_task_definition=$(aws ecs register-task-definition \
+            --cli-input-json "file://$registration_file" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          if [ -z "$temporary_task_definition" ] || [ "$temporary_task_definition" = "None" ]; then
+            echo "::error::ECS did not return an ARN for the temporary migration task definition."
+            temporary_task_definition=""
+            exit 1
+          fi
+          echo "Registered temporary migration task definition: $temporary_task_definition"
+
+          registered_image=$(aws ecs describe-task-definition \
+            --task-definition "$temporary_task_definition" \
+            --query "taskDefinition.containerDefinitions[?name=='MigrationContainer'].image" \
+            --output text)
+          if [ "$registered_image" != "$IMAGE_URI" ]; then
+            echo "::error::The temporary migration task definition runs $registered_image, not $IMAGE_URI from this build."
+            exit 1
+          fi
+
+          # One run-task call returns both the ARN and, when the task could not
+          # be placed, the failure reason. Never retry here: a retry could start
+          # a second migration.
           run_output=$(aws ecs run-task \
             --cluster "$CLUSTER" \
-            --task-definition "$MIGRATION_TASK_DEFINITION" \
+            --task-definition "$temporary_task_definition" \
             --launch-type FARGATE \
             --count 1 \
             --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"MigrationContainer\",\"image\":\"$IMAGE_URI\"}]}")
-          task_arn=$(jq -r '.tasks[0].taskArn // empty' <<<"$run_output")
-          failure_reason=$(jq -r '.failures[0].reason // empty' <<<"$run_output")
+            --query '[tasks[0].taskArn, failures[0].reason]' \
+            --output text)
+          IFS=$'\t' read -r task_arn failure_reason <<<"$run_output"
+          if [ "$task_arn" = "None" ]; then
+            task_arn=""
+          fi
           if [ -z "$task_arn" ]; then
             echo "::error::ECS did not start the migration task: ${failure_reason:-unknown reason}"
             exit 1
@@ -513,12 +835,11 @@ jobs:
 
           deadline=$((SECONDS + 1800))
           while [ "$SECONDS" -lt "$deadline" ]; do
-            description=$(aws ecs describe-tasks \
+            last_status=$(aws ecs describe-tasks \
               --cluster "$CLUSTER" \
               --tasks "$task_arn" \
-              --query 'tasks[0]' \
-              --output json)
-            last_status=$(jq -r '.lastStatus // empty' <<<"$description")
+              --query 'tasks[0].lastStatus' \
+              --output text)
             if [ "$last_status" = "STOPPED" ]; then
               task_finished="true"
               break
@@ -531,12 +852,40 @@ jobs:
               --cluster "$CLUSTER" \
               --task "$task_arn" \
               --reason "Migration exceeded the 30-minute deployment limit" >/dev/null || true
-            task_finished="true"
+            # stop-task is asynchronous. Cleanup may only deregister the
+            # temporary revision once ECS reports STOPPED, so wait for that
+            # instead of assuming the stop request finished the task. If this
+            # bounded wait expires, task_finished stays false and cleanup
+            # leaves the revision registered.
+            stop_deadline=$((SECONDS + 120))
+            while [ "$SECONDS" -lt "$stop_deadline" ]; do
+              last_status=$(aws ecs describe-tasks \
+                --cluster "$CLUSTER" \
+                --tasks "$task_arn" \
+                --query 'tasks[0].lastStatus' \
+                --output text)
+              if [ "$last_status" = "STOPPED" ]; then
+                task_finished="true"
+                break
+              fi
+              sleep 5
+            done
+            if [ "$task_finished" != "true" ]; then
+              echo "::warning::Migration task $task_arn has not reached STOPPED; leaving the temporary task definition registered."
+            fi
             exit 1
           fi
 
-          stopped_reason=$(jq -r '.stoppedReason // empty' <<<"$description")
-          exit_codes=$(jq -r '[.containers[].exitCode // empty] | map(tostring) | join(",")' <<<"$description")
+          stopped_reason=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks "$task_arn" \
+            --query 'tasks[0].stoppedReason' \
+            --output text)
+          exit_codes=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks "$task_arn" \
+            --query 'tasks[0].containers[*].exitCode' \
+            --output text)
           if [ "$exit_codes" != "0" ]; then
             echo "::error::Migration task stopped with exit codes [$exit_codes]: $stopped_reason"
             exit 1
@@ -627,4 +976,27 @@ jobs:
             echo "::error::The login page returned $login_code through CloudFront."
             exit 1
           fi
+
+          # A healthy API and login page do not prove a dynamic content route
+          # renders: /blog/:slug returned 500 in production while /api/health
+          # was green. Render one real entry from this build so a regression in
+          # the route (rather than in the content itself) fails the deployment.
+          # sed rather than head keeps the pipeline free of SIGPIPE under
+          # `set -o pipefail` when the content directory has many entries.
+          sample_slug=$(find src/content/blog -type f \( -name '*.md' -o -name '*.mdx' \) \
+            | sort | sed -n '1p')
+          if [ -z "$sample_slug" ]; then
+            echo "::error::No blog content entry was found to verify the dynamic blog route."
+            exit 1
+          fi
+          sample_slug=${sample_slug#src/content/blog/}
+          sample_slug=${sample_slug%.*}
+          blog_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --retry 12 --retry-delay 5 --retry-connrefused \
+            "${APPLICATION_URL%/}/blog/${sample_slug}")
+          if [ "$blog_code" != "200" ]; then
+            echo "::error::The blog post /blog/${sample_slug} returned $blog_code through CloudFront."
+            exit 1
+          fi
+          echo "Blog route /blog/${sample_slug} rendered through CloudFront."
           echo "Application is healthy at $health_url"

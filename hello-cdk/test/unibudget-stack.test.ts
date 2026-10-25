@@ -28,7 +28,8 @@ describe('UniBudget infrastructure', () => {
       PubliclyAccessible: false,
       MultiAZ: false,
       DeletionProtection: true,
-      BackupRetentionPeriod: 7,
+      // The account free plan rejects any higher retention period.
+      BackupRetentionPeriod: 1,
       VPCSecurityGroups: Match.anyValue(),
       DBSubnetGroupName: Match.anyValue(),
     });
@@ -110,9 +111,43 @@ describe('UniBudget infrastructure', () => {
         Name.startsWith('MIGRATION_'),
       ),
     ).toBe(false);
+    const secretLogicalId = (secretName: string): string => {
+      const entry = Object.entries(
+        template.findResources('AWS::SecretsManager::Secret'),
+      ).find(([, resource]) => resource.Properties?.Name === secretName);
+      if (!entry) {
+        throw new Error(`Expected the stack to define the secret ${secretName}.`);
+      }
+      return entry[0];
+    };
+    const secretReference = (name: string) =>
+      (
+        appContainer.Secrets as Array<{ Name: string; ValueFrom?: unknown }>
+      ).find((secret) => secret.Name === name)?.ValueFrom;
+
+    const applicationSecretId = secretLogicalId('unibudget/supabase/application');
+    const caSecretId = secretLogicalId('unibudget/supabase/ca');
+
+    // The deployment workflow compares these references verbatim before it
+    // migrates, so the rendered shape is part of the contract: a JSON-key
+    // reference must end with :<key>:: and the CA must be the whole secret.
+    expect(secretReference('PGUSER')).toEqual({
+      'Fn::Join': ['', [{ Ref: applicationSecretId }, ':username::']],
+    });
+    expect(secretReference('PGPASSWORD')).toEqual({
+      'Fn::Join': ['', [{ Ref: applicationSecretId }, ':password::']],
+    });
+    expect(secretReference('SUPABASE_CA_CERT')).toEqual({ Ref: caSecretId });
     expect(appContainer.PortMappings).toContainEqual(
       expect.objectContaining({ ContainerPort: 8080, Protocol: 'tcp' }),
     );
+    // Liveness and readiness stay separate: the container probe must not
+    // depend on PostgreSQL, while the target group keeps the database-backed
+    // readiness path asserted above. A database outage therefore drains the
+    // target group instead of making ECS replace healthy tasks.
+    const livenessCommand = (appContainer.HealthCheck?.Command ?? []).join(' ');
+    expect(livenessCommand).toContain('/api/live');
+    expect(livenessCommand).not.toContain('/api/health');
 
     expect(migrationContainer.Command).toEqual([
       'node',
@@ -167,6 +202,61 @@ describe('UniBudget infrastructure', () => {
       Protocol: 'HTTP',
       DefaultActions: Match.arrayWith([Match.objectLike({ Type: 'forward' })]),
     });
+  });
+
+  test('retains tagged releases separately from untagged manifests', () => {
+    const template = createTemplate();
+    const repositories = Object.values(
+      template.findResources('AWS::ECR::Repository'),
+    );
+
+    expect(repositories).toHaveLength(1);
+    const policyText = repositories[0].Properties.LifecyclePolicy
+      ?.LifecyclePolicyText;
+    expect(typeof policyText).toBe('string');
+    const rules = (
+      JSON.parse(policyText as string) as {
+        rules: Array<{
+          rulePriority: number;
+          selection: {
+            tagStatus: string;
+            tagPatternList?: string[];
+            countType: string;
+            countNumber: number;
+          };
+          action: { type: string };
+        }>;
+      }
+    ).rules;
+
+    // A docker push creates three ECR images (index, platform manifest,
+    // attestation). Counting all of them in one "any" rule with a small limit
+    // expires deployable releases after one or two pushes, so tagged indexes
+    // and untagged artifacts are counted separately.
+    expect(rules).toEqual([
+      expect.objectContaining({
+        rulePriority: 1,
+        selection: {
+          tagStatus: 'tagged',
+          tagPatternList: ['*'],
+          countType: 'imageCountMoreThan',
+          countNumber: 10,
+        },
+        action: { type: 'expire' },
+      }),
+      expect.objectContaining({
+        rulePriority: 2,
+        selection: expect.objectContaining({
+          tagStatus: 'untagged',
+          countType: 'imageCountMoreThan',
+          countNumber: 10,
+        }),
+        action: { type: 'expire' },
+      }),
+    ]);
+    expect(
+      rules.some(({ selection }) => selection.tagStatus === 'any'),
+    ).toBe(false);
   });
 
   test('serves HTTPS from the AWS-generated CloudFront hostname without a custom domain', () => {
@@ -447,5 +537,101 @@ describe('UniBudget infrastructure', () => {
     expect(outputs.SupabaseCaSecretArn?.Value).toEqual({
       Ref: expect.stringContaining('SupabaseCaCertificate'),
     });
+  });
+
+  test('alarms on target 5xx, unhealthy targets, missing tasks, and structured errors', () => {
+    const template = createTemplate({ desiredCount: 1 });
+    const alarms = Object.values(
+      template.findResources('AWS::CloudWatch::Alarm'),
+    );
+    const propertiesByMetric = Object.fromEntries(
+      alarms.map((alarm) => [alarm.Properties.MetricName, alarm.Properties]),
+    );
+
+    expect(alarms).toHaveLength(4);
+    expect(propertiesByMetric.HTTPCode_Target_5XX_Count).toMatchObject({
+      Namespace: 'AWS/ApplicationELB',
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 5,
+      ComparisonOperator: 'GreaterThanThreshold',
+      EvaluationPeriods: 2,
+      TreatMissingData: 'notBreaching',
+      Dimensions: expect.arrayContaining([
+        { Name: 'TargetGroup', Value: expect.anything() },
+      ]),
+    });
+    expect(propertiesByMetric.UnHealthyHostCount).toMatchObject({
+      Namespace: 'AWS/ApplicationELB',
+      Statistic: 'Maximum',
+      Period: 60,
+      Threshold: 0,
+      ComparisonOperator: 'GreaterThanThreshold',
+      EvaluationPeriods: 2,
+      TreatMissingData: 'notBreaching',
+    });
+    expect(propertiesByMetric.RunningTaskCount).toMatchObject({
+      Namespace: 'AWS/ECS',
+      Statistic: 'Average',
+      Period: 60,
+      Threshold: 1,
+      ComparisonOperator: 'LessThanThreshold',
+      EvaluationPeriods: 3,
+      TreatMissingData: 'breaching',
+      Dimensions: expect.arrayContaining([
+        { Name: 'ServiceName', Value: expect.anything() },
+        { Name: 'ClusterName', Value: expect.anything() },
+      ]),
+    });
+    expect(propertiesByMetric.StructuredErrorCount).toMatchObject({
+      Namespace: 'UniBudget/Application',
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 5,
+      ComparisonOperator: 'GreaterThanThreshold',
+      EvaluationPeriods: 2,
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  test('counts structured error log events and leaves notification actions to the operator', () => {
+    const template = createTemplate({ desiredCount: 1 });
+    const filters = Object.values(
+      template.findResources('AWS::Logs::MetricFilter'),
+    );
+    const alarms = Object.values(
+      template.findResources('AWS::CloudWatch::Alarm'),
+    );
+
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties).toMatchObject({
+      FilterPattern: '{ $.level = "error" }',
+      MetricTransformations: [
+        {
+          MetricNamespace: 'UniBudget/Application',
+          MetricName: 'StructuredErrorCount',
+          MetricValue: '1',
+          DefaultValue: 0,
+        },
+      ],
+    });
+    // No SNS topic or action is created: an unconfirmed subscription would be
+    // worse than an explicit operator step.
+    expect(
+      alarms.every((alarm) => alarm.Properties.AlarmActions === undefined),
+    ).toBe(true);
+    template.resourceCountIs('AWS::SNS::Topic', 0);
+  });
+
+  test('omits the task-count alarm while a bootstrap stack is scaled to zero', () => {
+    const template = createTemplate();
+    const alarms = Object.values(
+      template.findResources('AWS::CloudWatch::Alarm'),
+    );
+
+    expect(alarms).toHaveLength(3);
+    expect(
+      alarms.some((alarm) => alarm.Properties.MetricName === 'RunningTaskCount'),
+    ).toBe(false);
   });
 });

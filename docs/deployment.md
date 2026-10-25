@@ -1,5 +1,8 @@
 # AWS deployment and database migration guide
 
+> Week 7 deliverable status, evidence, drills, and outstanding work:
+> [week7-deliverables.md](week7-deliverables.md).
+
 ## Architecture and scope
 
 The production database is Supabase PostgreSQL, reached through its **session
@@ -159,21 +162,41 @@ local diagnostic scripts are excluded by `.dockerignore` and the Dockerfile.
 `uuid-ossp` is installed in Supabase's `extensions` schema; inserts using the
 UUID column defaults do not require privileges on that schema.
 
-## Health checks and role assertion
+## Health checks, liveness, and role assertion
+
+Two endpoints report different things, and each probe uses the one that
+matches its purpose:
+
+| Endpoint | Reaches PostgreSQL | Used by |
+| --- | --- | --- |
+| `/api/live` | no | ECS container health check and the image `HEALTHCHECK` |
+| `/api/health` | yes | ALB target group, the workflow's post-deploy check, and operators |
+
+`/api/live` answers `{"status":"ok"}` with HTTP 200 from the process alone.
+It never opens a connection, so a Supabase outage cannot mark a healthy task
+as dead and send ECS into a replacement loop.
 
 `/api/health` runs `SELECT 1` on a separate single-connection pool with a
 two-second server-side `statement_timeout` and a 2.5-second client query
 timeout. The query is cancelled, not merely raced, and returns
 `{"status":"ok"}` with HTTP 200 or `{"status":"unavailable"}` with HTTP 503.
-It never returns database, host, role, or credential details. Both the
-container `HEALTHCHECK` and the ALB target group use this endpoint and accept
-only HTTP 200.
+It never returns database, host, role, or credential details. Both endpoints
+accept only HTTP 200 and neither is cached or protected by the role gate.
 
 In production, middleware asserts that the current database role is
 `unibudget_app` and returns 503 if it is not. The check uses the same bounded
 health pool, is cached after the first success, and is retried after a failure,
 so a misconfigured `PGUSER` fails closed instead of hanging the request or
 running with elevated privileges.
+
+The split is deliberate. Readiness stays database-dependent, so the load
+balancer stops routing new requests to a target that cannot serve them.
+Liveness stays database-independent, so ECS keeps the existing tasks. During
+a database outage the observed effect is a drained target group behind
+CloudFront that recovers on its own, not a service that replaces its tasks
+every few minutes. The trade-off is that ECS will not replace a task whose
+process is alive but whose database connection is broken; that task is
+reused when the dependency recovers instead of being restarted.
 
 ## HTTPS and the CloudFront distribution
 
@@ -197,8 +220,8 @@ The distribution is configured by the CDK stack, not by hand:
   required.
 - **Caching:** `CachingDisabled` for the whole distribution. Astro renders
   per-user HTML, and the same host serves `/api/auth/*`, `/api/budgets`,
-  `/api/transactions`, and `/api/health`; no response may be stored or shared
-  between viewers.
+  `/api/transactions`, `/api/health`, and `/api/live`; no response may be
+  stored or shared between viewers.
 - **Origin request policy:** `AllViewer`, which forwards every viewer header
   (including `Host`), all cookies (the `session` cookie), and all query strings.
   Astro therefore sees the CloudFront hostname and its relative redirects stay
@@ -253,11 +276,13 @@ Prerequisites:
 3. Read the `ApplicationUrl` and `CloudFrontDomainName` stack outputs. They are
    `https://<distribution-id>.cloudfront.net`; do not invent or paste a
    hostname, and do not create a DNS record.
-4. Run the workflow again with `bootstrapOnly=false`, the same `imageTag`, and
-   `recoveryPlanVerified=true` after confirming the restore point. It checks
-   the CloudFront delivery configuration, builds and pushes the image,
-   validates both task definitions and the migration task, runs the migration,
-   and only then deploys the requested running task count.
+4. Run the workflow again with `bootstrapOnly=false`, the same `imageTag`,
+   `recoveryPlanVerified=true`, and the recorded `recoveryPointReference` and
+   `recoveryPointTimestamp` for the restore point you verified. It checks the
+   CloudFront delivery configuration and the HTTPS `/login` origin response,
+   builds and pushes the image, validates both task definitions and the
+   migration task, runs the migration, and only then deploys the requested
+   running task count.
 5. Confirm the ALB target is healthy and that
    `https://<distribution-id>.cloudfront.net/api/health` returns 200.
 6. Register a user, sign in, and verify that the session survives a request.
@@ -291,20 +316,55 @@ A normal deployment is refused while the stack does not exist, and
 2. Populate the three Supabase secrets.
 3. Authenticate to ECR using the `ImageRepositoryUri` stack output, then build
    and push the same tag. Never reuse an existing immutable tag.
-4. Run the migration task using the stack's `MigrationTaskDefinitionArn`, its
-   `PublicSubnetIds`, and `ApplicationSecurityGroupId`, with an **explicit image
-   override** to the image you just pushed:
+4. Run the migration task on the image you just pushed. ECS container
+   overrides have no `image` field, so `run-task --overrides` cannot select an
+   image; the one-off task has to reference it in a task definition. Register a
+   temporary revision from the stack's current migration definition with only
+   the image replaced:
 
    ```bash
+   aws ecs describe-task-definition \
+     --task-definition "$MIGRATION_TASK_DEFINITION_ARN" \
+     --query 'taskDefinition' \
+     --output json > /tmp/migration-task.json
+
+   node scripts/migrationTaskDefinition.mjs \
+     /tmp/migration-task.json "$IMAGE_URI" > /tmp/migration-registration.json
+
+   one_off_task_definition=$(aws ecs register-task-definition \
+     --cli-input-json file:///tmp/migration-registration.json \
+     --query 'taskDefinition.taskDefinitionArn' \
+     --output text)
+
    aws ecs run-task \
      --cluster "$CLUSTER_NAME" \
-     --task-definition "$MIGRATION_TASK_DEFINITION_ARN" \
+     --task-definition "$one_off_task_definition" \
      --launch-type FARGATE \
-     --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SECURITY_GROUP_ID],assignPublicIp=ENABLED}" \
-     --overrides "{\"containerOverrides\":[{\"name\":\"MigrationContainer\",\"image\":\"$REPOSITORY_URI:$IMAGE_TAG\"}]}"
+     --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SECURITY_GROUP_ID],assignPublicIp=ENABLED}"
    ```
 
-   Wait for the task to stop and require every container exit code to be `0`.
+   `scripts/migrationTaskDefinition.mjs` copies the described definition's
+   family, roles, CPU and memory, network mode, runtime platform, environment,
+   secrets, and logging, and changes nothing except the `MigrationContainer`
+   image. It fails if the definition has no `MigrationContainer`, if the image
+   reference is empty, contains whitespace, or carries no tag or digest, and it
+   never sends the read-only fields that `register-task-definition` rejects. It
+   also fails if the described definition has a field it does not know how to
+   preserve, instead of silently dropping configuration.
+
+   Confirm the revision before running it:
+
+   ```bash
+   aws ecs describe-task-definition \
+     --task-definition "$one_off_task_definition" \
+     --query "taskDefinition.containerDefinitions[?name=='MigrationContainer'].image" \
+     --output text
+   ```
+
+   Wait until `describe-tasks` reports `STOPPED`, require every container exit
+   code to be `0`, and only then deregister the one-off revision; the service
+   never references it:
+   `aws ecs deregister-task-definition --task-definition "$one_off_task_definition"`.
    Do not continue to a rollout if the migration fails. Run the migration a
    second time to confirm checksum/idempotency behavior.
 5. Deploy again with the same image tag, pooler host, prefix list ID, and the
@@ -395,12 +455,19 @@ The GitHub deploy role needs these actions for the commands in
 | CloudFormation | `CreateStack`, `UpdateStack`, `DescribeStacks`, `DescribeStackEvents`, `DescribeStackResources`, `ListStackResources`, `GetTemplate`, `GetTemplateSummary`, `CreateChangeSet`, `DescribeChangeSet`, `ExecuteChangeSet`, `DeleteChangeSet` | The `UniBudgetStack` stack |
 | ECR | `GetAuthorizationToken` | `*` |
 | ECR | `DescribeImages`, `BatchCheckLayerAvailability`, `InitiateLayerUpload`, `UploadLayerPart`, `CompleteLayerUpload`, `PutImage` | The `UniBudgetStack` repository |
-| ECS | `DescribeClusters`, `DescribeServices`, `DescribeTaskDefinition`, `DescribeTasks`, `RunTask`, `StopTask` | The `UniBudgetStack` cluster, service, and task definitions |
+| ECS | `DescribeClusters`, `DescribeServices`, `DescribeTaskDefinition`, `DescribeTasks`, `RunTask`, `StopTask`, `RegisterTaskDefinition`, `DeregisterTaskDefinition` | The `UniBudgetStack` cluster and service, plus the `UniBudgetStack` task definition families for the task-definition actions |
 | IAM | `GetRole`, `PassRole` | The stack roles listed below; do not use `*` |
 | S3 / SSM | Read/write the CDK bootstrap bucket and read its version parameter | The CDK bootstrap resources |
 
 `ecs:DescribeTaskDefinition` is required by the workflow's validation of **both**
-task definitions; it is not optional. `ec2:DescribeManagedPrefixLists` is
+task definitions, and by the migration step's read-back of the one-off
+revision; it is not optional. `ecs:RegisterTaskDefinition` and
+`ecs:DeregisterTaskDefinition` are required because the migration runs on a
+temporary revision that pins the newly built image; ECS has no image
+override, so without those two actions the migration step fails before
+`RunTask`. Scope them to the migration task definition family. Registering
+the revision also passes the task and execution roles, so the `iam:PassRole`
+entry above must include both migration roles. `ec2:DescribeManagedPrefixLists` is
 required because the workflow resolves the CloudFront origin-facing prefix list
 and passes its ID to the stack. `cloudfront:GetDistribution` and
 `cloudfront:GetDistributionConfig` read the deployed distribution back, and
@@ -527,33 +594,50 @@ boundary.
 
 ## Subsequent deployments
 
-For an existing stack the workflow:
+For an existing stack the workflow installs the dependencies, runs the
+application test suite (a failure stops the run before any image or AWS change),
+and then:
 
 1. reads `ApplicationUrl`, `CloudFrontDomainName`, and `CloudFrontDistributionId`
    from the stack outputs and verifies that the distribution is `Deployed`,
    serves this stack's ALB, redirects HTTP to HTTPS, uses `CachingDisabled`,
    forwards all headers and cookies, allows the required methods, and is not
-   attached to a custom domain, before building or migrating;
+   attached to a custom domain, then requests the HTTPS `/login` page through
+   CloudFront and requires the real UniBudget login form on a cache miss,
+   following redirects only on that hostname, before building or migrating;
 2. builds and pushes a new immutable tag (it refuses to overwrite an existing
    tag);
 3. reads both task definitions and the exact role and secret ARNs from stack
    outputs;
 4. verifies the cluster and service are `ACTIVE`;
 5. verifies both task definitions' task role and execution role ARNs against
-   the stack outputs, and the migration container command, `PGHOST`, `PGPORT`,
-   `PGDATABASE`, `PGSSLMODE`, and exact secret names and ARNs;
-6. runs the migration task with an explicit image override and stops it if the
-   job is cancelled or exceeds 30 minutes;
+   the stack outputs, the application container's exact environment variables
+   and secret references, and the migration container command, `PGHOST`,
+   `PGPORT`, `PGDATABASE`, `PGSSLMODE`, and exact secret names and ARNs;
+6. registers a one-off revision of the migration task definition whose only
+   change is the image this run built, verifies that revision's
+   `MigrationContainer` image, and runs it. It waits up to 30 minutes; if that
+   expires it stops the task and waits up to two more minutes for ECS to report
+   `STOPPED`. The one-off revision is deregistered only after that confirmation,
+   or after a task that failed on its own had already stopped. On cancellation,
+   or when the stop cannot be confirmed, the task is stopped but the revision is
+   left registered for inspection. The ECS service is never scaled down or
+   pointed at the temporary revision, and the rollout still uses `$IMAGE_TAG`
+   from the same build;
 7. deploys the stack only after migration exit code `0`;
 8. waits for ECS service stability, verifies that the service is running the
-   image this workflow built, and checks `/api/health` and `/login` through the
-   CloudFront HTTPS URL.
+   image this workflow built, and checks `/api/health`, `/login`, and one real
+   `/blog/<slug>` entry from `src/content/blog` through the CloudFront HTTPS
+   URL. The blog check exists because health and login can be green while a
+   dynamic content route still fails.
 
 The workflow requires an explicit `desiredCount` between `1` and `10`; it has
 no default and never silently scales the service to zero. A non-bootstrap run
 also requires `recoveryPlanVerified=true`, the explicit confirmation that a
-restorable Supabase backup or PITR restore point exists; the run refuses to
-migrate without it. To intentionally stop the service, deploy the stack
+restorable Supabase backup or PITR restore point exists, plus that point's
+`recoveryPointReference` and `recoveryPointTimestamp`, which are recorded in the
+run summary; the run refuses to migrate without them. To intentionally stop the
+service, deploy the stack
 separately with `desiredCount=0` during an approved maintenance window.
 
 If the pooler host or secret references in the stack differ from what the
@@ -562,8 +646,8 @@ check by overriding task environment values.
 
 Changing the pooler host needs a maintenance deployment: deploy the stack with
 `desiredCount=0` so the application is not restarted against the old host,
-confirm the new migration task definition, run the migration with an explicit
-image override, then deploy the approved running count. Schedule the window and
+confirm the new migration task definition, run the migration on a one-off revision
+pinned to the image you pushed, then deploy the approved running count. Schedule the window and
 confirm the new pooler host and credentials in a disposable environment first.
 
 ### Upgrading an existing UniBudgetStack
@@ -815,9 +899,15 @@ after the restore point; communicate that data-loss window before proceeding.
 ## Rollback and its limits
 
 - **Application:** the ECS deployment circuit breaker rolls back a failed
-  service deployment. Immutable previous image tags remain in ECR. If the
-  application password changed, redeploying the old image also requires
-  restoring the matching old password value or rotating the role again.
+  service deployment. The ECR lifecycle policy keeps the ten most recent
+  tagged releases, and each push adds a tagged OCI index plus untagged
+  platform and attestation manifests; the policy counts those separately.
+  ECR will not expire an untagged child while a tagged index references it,
+  so a retained tag's manifest and attestation survive until that index is
+  expired. The window is still finite: confirm the target tag is present with
+  `aws ecr describe-images` before relying on it. If the application password
+  changed, redeploying the old image also requires restoring the matching old
+  password value or rotating the role again.
 - **Database:** migrations are forward-only; there are no down scripts.
   Recovery is a Supabase backup or point-in-time restore to a recorded point.
   Restoring the database does not restore the ECR image or ECS task definition;
@@ -828,12 +918,27 @@ after the restore point; communicate that data-loss window before proceeding.
 - **RDS:** decommissioning requires a verified snapshot, an explicit cost
   decision, and a plan for its security group.
 
+The ECR lifecycle policy in `hello-cdk/lib/cdk-stack.ts` keeps ten tagged
+images and ten untagged images. That rule is a proposal in the stack
+definition: it takes effect only after the stack is deployed, so until then
+the repository keeps whatever policy is live in ECR and the running `v1`
+image is not protected by the new rule yet. Applying it requires a
+lifecycle-policy preview first: the preview lists the digests that would expire and does not
+delete anything. A single rule with `tagStatus: any` is not equivalent,
+because one push contributes three images (the tagged index, the amd64
+manifest, and the BuildKit attestation) to that count.
+
 ## Costs and retained resources
 
 The retained RDS instance, its generated secrets, the ECR repository, and the
 log group continue to incur charges after the Supabase cutover. Do not remove
 RDS from the stack until a snapshot has been verified and the retention and
 billing decision is approved.
+
+An AWS account on the Free plan rejects any RDS backup retention period above
+one day. The stack requests exactly one day, the largest value that plan accepts
+while keeping automated backups enabled (zero would disable them). Raise it back
+to seven days after upgrading to a Paid plan.
 
 Other recurring charges include the ALB, CloudFront requests and data transfer,
 Fargate tasks, public IPv4 addresses, ECR storage and scanning, CloudWatch log

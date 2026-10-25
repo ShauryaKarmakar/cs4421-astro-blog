@@ -1,21 +1,54 @@
 ---
-import { type CollectionEntry, getCollection, getEntry, render } from 'astro:content';
+import { getEntry, render } from 'astro:content';
+import BaseHead from '../../components/BaseHead.astro';
+import Footer from '../../components/Footer.astro';
+import Header from '../../components/Header.astro';
 import BlogPost from '../../layouts/BlogPost.astro';
+import { loadBlogPost } from '../../lib/blogPost';
 
-export async function getStaticPaths() {
-	const posts = await getCollection('blog');
-	return posts.map((post) => ({
-		params: { slug: post.id },
-		props: post,
-	}));
+// This route is rendered on demand because the app uses `output: 'server'`.
+// Static path generation only supplies props for prerendered routes, so the
+// entry has to be looked up from the URL parameter and not from component
+// props.
+const result = await loadBlogPost(Astro.params.slug, {
+  // getEntry's generated overload allows an undefined return for a
+  // dynamic id, so normalise it to the lookup's promise-only contract.
+  getBlogEntry: async (id) => (await getEntry('blog', id)) ?? undefined,
+  getAuthorEntry: (reference) => getEntry(reference),
+  render,
+});
+
+if (!result) {
+  Astro.response.status = 404;
 }
-type Props = CollectionEntry<'blog'>;
 
-const post = Astro.props;
-const author = await getEntry(post.data.author);
-const { Content } = await render(post);
+const post = result?.post;
+const author = result?.author;
+const Content = result?.Content;
 ---
 
-<BlogPost {...post.data} author={author.data}>
-	<Content />
-</BlogPost>
+{
+  post && Content ? (
+    <BlogPost {...post.data} author={author?.data}>
+      <Content />
+    </BlogPost>
+  ) : (
+    <html lang="en">
+      <head>
+        <BaseHead
+          title="Post not found"
+          description="The requested blog post could not be found."
+        />
+      </head>
+      <body>
+        <Header />
+        <main>
+          <h1>Post not found</h1>
+          <p>The requested blog post does not exist or is no longer available.</p>
+          <p><a href="/blog/">Back to the blog</a></p>
+        </main>
+        <Footer />
+      </body>
+    </html>
+  )
+}

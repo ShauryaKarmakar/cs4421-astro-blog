@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -206,10 +207,33 @@ export class UniBudgetStack extends cdk.Stack {
       'PEM CA certificate downloaded from the Supabase project database settings.',
     );
 
+    // A docker push of this build lands three images in ECR: the tagged OCI
+    // index, the amd64 manifest it references, and a BuildKit attestation.
+    // A single rule with tagStatus "any" counts all three, so a small
+    // maxImageCount expires deployable tags after one or two releases and
+    // destroys the rollback history. Retain tagged releases by themselves,
+    // and clean untagged manifests separately; ECR never expires an untagged
+    // child while a tagged index still references it.
     const repository = new ecr.Repository(this, 'ApplicationRepository', {
       imageTagMutability: ecr.TagMutability.IMMUTABLE,
       imageScanOnPush: true,
-      lifecycleRules: [{ maxImageCount: 5 }],
+      lifecycleRules: [
+        {
+          description:
+            'Retain the ten most recent tagged releases as rollback candidates.',
+          tagStatus: ecr.TagStatus.TAGGED,
+          // A wildcard keeps the rule independent of the tag naming scheme
+          // while still counting only tagged indexes.
+          tagPatternList: ['*'],
+          maxImageCount: 10,
+        },
+        {
+          description:
+            'Expire untagged manifests and attestations no longer referenced by a tagged release.',
+          tagStatus: ecr.TagStatus.UNTAGGED,
+          maxImageCount: 10,
+        },
+      ],
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
@@ -231,7 +255,12 @@ export class UniBudgetStack extends cdk.Stack {
       storageEncrypted: true,
       publiclyAccessible: false,
       multiAz: false,
-      backupRetention: cdk.Duration.days(7),
+      // One day is the largest automated-backup window this account accepts:
+      // the free plan rejects anything above it with "The specified backup
+      // retention period exceeds the maximum available to free tier customers".
+      // Zero would disable automated backups entirely, so one day keeps
+      // point-in-time restore for the previous 24 hours.
+      backupRetention: cdk.Duration.days(1),
       deletionProtection: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       autoMinorVersionUpgrade: true,
@@ -287,12 +316,16 @@ export class UniBudgetStack extends cdk.Stack {
         logGroup,
         streamPrefix: 'application',
       }),
+      // Liveness only. This probe must not depend on PostgreSQL: ECS stops
+      // and replaces a task whose container health check fails, so a database
+      // outage must not read as a dead process. Readiness stays on
+      // /api/health, which the load balancer target group probes.
       healthCheck: {
         command: [
           'CMD',
           'node',
           '-e',
-          "fetch('http://127.0.0.1:8080/api/health').then((response) => process.exit(response.status === 200 ? 0 : 1)).catch(() => process.exit(1))",
+          "fetch('http://127.0.0.1:8080/api/live').then((response) => process.exit(response.status === 200 ? 0 : 1)).catch(() => process.exit(1))",
         ],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
@@ -442,6 +475,81 @@ export class UniBudgetStack extends cdk.Stack {
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
         compress: true,
       },
+    });
+
+    // Operational alarms. These are definitions only: CloudWatch delivers no
+    // notification until an operator attaches an SNS topic action, which this
+    // stack intentionally leaves to the account owner (and its subscription
+    // confirmation) instead of creating an unconfirmed topic here.
+    targetGroup.metrics
+      .httpCodeTarget(elbv2.HttpCodeTarget.TARGET_5XX_COUNT, {
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      })
+      .createAlarm(this, 'Target5xxAlarm', {
+        alarmDescription:
+          'More than five 5xx responses from the application targets in ten minutes.',
+        threshold: 5,
+        evaluationPeriods: 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    targetGroup.metrics
+      .unhealthyHostCount({
+        period: cdk.Duration.minutes(1),
+        statistic: 'Maximum',
+      })
+      .createAlarm(this, 'UnhealthyTargetsAlarm', {
+        alarmDescription:
+          'At least one application target reported unhealthy for two consecutive minutes.',
+        threshold: 0,
+        evaluationPeriods: 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    // A bootstrap stack is deliberately scaled to zero, so a task-count alarm
+    // would fire during that intentional state. It is added only once the
+    // stack has a running target count.
+    if (desiredCount > 0) {
+      service
+        .metric('RunningTaskCount', {
+          period: cdk.Duration.minutes(1),
+          statistic: 'Average',
+        })
+        .createAlarm(this, 'RunningTaskCountAlarm', {
+          alarmDescription: `Fewer than ${desiredCount} ECS tasks are running for three consecutive minutes.`,
+          threshold: desiredCount,
+          evaluationPeriods: 3,
+          comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+          // No datapoint means the service emitted none, which is worse than a
+          // low count for an alarm that guards task availability.
+          treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+        });
+    }
+
+    // src/lib/serverLogger.ts writes one JSON object per line to stderr, which
+    // the awslogs driver forwards here. An error event is `{"level":"error"}`.
+    new logs.MetricFilter(this, 'ApplicationErrorMetricFilter', {
+      logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.level', '=', 'error'),
+      metricNamespace: 'UniBudget/Application',
+      metricName: 'StructuredErrorCount',
+      defaultValue: 0,
+    });
+    new cloudwatch.Metric({
+      namespace: 'UniBudget/Application',
+      metricName: 'StructuredErrorCount',
+      statistic: 'Sum',
+      period: cdk.Duration.minutes(5),
+    }).createAlarm(this, 'StructuredErrorAlarm', {
+      alarmDescription:
+        'More than five structured error log events in ten minutes.',
+      threshold: 5,
+      evaluationPeriods: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
     // The public URL is derived from the distribution, never supplied by hand.
