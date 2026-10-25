@@ -403,8 +403,10 @@ jobs:
             echo "::error::CloudFront uses ACM certificate $acm_certificate; this deployment must use the AWS-managed default certificate."
             exit 1
           fi
-          require_config "origin count" "$(jq -r '.Origins | length' <<<"$config")" "1"
-          require_config "origin" "$(jq -r '.Origins[0].DomainName' <<<"$config")" "$LOAD_BALANCER_DNS"
+          # Origins is a {Quantity, Items} object, not an array; count and
+          # index Items so the gate checks the distribution, not its keys.
+          require_config "origin count" "$(jq -r '.Origins.Items | length' <<<"$config")" "1"
+          require_config "origin" "$(jq -r '.Origins.Items[0].DomainName' <<<"$config")" "$LOAD_BALANCER_DNS"
           require_config "viewer protocol" "$(jq -r '.DefaultCacheBehavior.ViewerProtocolPolicy' <<<"$config")" "redirect-to-https"
           # CachingDisabled: no user-specific HTML, session, or API response may
           # be stored at the edge. AllViewer forwards every header (including

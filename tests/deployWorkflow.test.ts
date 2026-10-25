@@ -139,7 +139,11 @@ describe('deployment workflow contracts', () => {
       'LOAD_BALANCER_DNS: ${{ steps.outputs.outputs.load_balancer_dns }}',
     );
     expect(cloudFrontStep).toContain('cloudfront get-distribution-config');
-    expect(cloudFrontStep).toContain('.Origins[0].DomainName');
+    expect(cloudFrontStep).toContain(
+      `require_config "origin count" "$(jq -r '.Origins.Items | length' <<<"$config")" "1"`,
+    );
+    expect(cloudFrontStep).toContain('.Origins.Items[0].DomainName');
+    expect(cloudFrontStep).not.toContain("jq -r '.Origins | length'");
     expect(cloudFrontStep).toContain('"redirect-to-https"');
     expect(cloudFrontStep).toContain(
       '4135ea2d-6df8-44a3-9df3-4b5a84be39ad',
