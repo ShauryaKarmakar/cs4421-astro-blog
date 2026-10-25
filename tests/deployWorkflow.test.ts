@@ -206,6 +206,9 @@ describe('deployment workflow contracts', () => {
     expect(health).toContain('src/content/blog');
     expect(health).toContain('/blog/${sample_slug}');
     expect(health).toContain('blog_code');
+    expect(health).toContain('missing_slug');
+    expect(health).toContain('missing_code');
+    expect(health).toContain('expected 404');
   });
 
   it('restricts the load balancer to the CloudFront origin-facing prefix list', () => {
@@ -231,6 +234,7 @@ describe('deployment workflow contracts', () => {
       'Validate Deployment Inputs',
       'Create the Initial Stack Without Starting the Application',
       'Read Stack Outputs',
+      'Verify ECR Retention Policy Before Image Push',
       'Verify CloudFront Delivery Configuration',
       'Build and Push Application Image',
       'Validate Migration Task Configuration',
@@ -376,6 +380,64 @@ describe('repository hygiene contracts', () => {
     );
     expect(dockerfile).toContain('org.opencontainers.image.version');
     expect(dockerfile).toContain('org.opencontainers.image.revision');
+  });
+
+  it('requires a semantic release tag', () => {
+    const validation = stepBlock('Validate Deployment Inputs');
+
+    expect(validation).toContain('node scripts/releaseTag.mjs "$IMAGE_TAG"');
+    expect(validation).toContain('semantic release version');
+  });
+
+  it('requires the annotated release tag to point at the deployed commit', () => {
+    const validation = stepBlock('Validate Deployment Inputs');
+
+    expect(workflow).toContain('fetch-depth: 0');
+    expect(validation).toContain(
+      'git rev-parse -q --verify "refs/tags/$IMAGE_TAG^{commit}"',
+    );
+    expect(validation).toContain('git cat-file -t "refs/tags/$IMAGE_TAG"');
+    expect(validation).toContain('must be an annotated tag');
+    expect(validation).toContain('git rev-list -n 1 "refs/tags/$IMAGE_TAG"');
+    expect(validation).toContain('"$tag_commit" != "$GITHUB_SHA"');
+  });
+
+  it('blocks an unsafe ECR retention policy before building or pushing', () => {
+    const policyStep = stepBlock('Verify ECR Retention Policy Before Image Push');
+    const buildIndex = workflow.indexOf(
+      '      - name: Build and Push Application Image\n',
+    );
+    const policyIndex = workflow.indexOf(
+      '      - name: Verify ECR Retention Policy Before Image Push\n',
+    );
+
+    expect(policyStep).toContain('aws ecr get-lifecycle-policy');
+    expect(policyStep).toContain('node scripts/ecrLifecyclePolicy.mjs -');
+    expect(policyStep).toContain('printf \'%s\' "$policy_text"');
+    expect(policyIndex).toBeGreaterThan(-1);
+    expect(policyIndex).toBeLessThan(buildIndex);
+  });
+
+  it('passes the optional alarm topic to both stack deployments', () => {
+    expect(workflow).toContain(
+      'ALARM_TOPIC_ARN: ${{ vars.ALARM_TOPIC_ARN }}',
+    );
+    expect(workflow.match(/-c alarmTopicArn="\$ALARM_TOPIC_ARN"/g)).toHaveLength(2);
+  });
+
+  it('records the published digest and verifies the running task uses it', () => {
+    const build = stepBlock('Build and Push Application Image');
+    const running = stepBlock('Verify the Running Image');
+
+    expect(build).toContain('image_digest=$(aws ecr describe-images');
+    expect(build).toContain('echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"');
+    expect(build).toContain('sha256:[0-9a-f]{64}');
+    expect(running).toContain(
+      'IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}',
+    );
+    expect(running).toContain('aws ecs list-tasks');
+    expect(running).toContain('aws ecs describe-tasks');
+    expect(running).toContain('.imageDigest == $digest');
   });
 
   it('runs the application test suite before building the image', () => {

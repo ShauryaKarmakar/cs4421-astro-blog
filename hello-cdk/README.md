@@ -10,8 +10,10 @@ the AWS-managed certificate, so no custom domain or ACM certificate is needed.
 The ALB is an HTTP origin that accepts traffic only from the CloudFront
 origin-facing prefix list.
 
-Run CDK commands from this `hello-cdk` directory. The stack requires an explicit
-image tag, a Supabase session-pooler hostname, and the regional CloudFront
+Run CDK commands from this `hello-cdk` directory. A release uses a semantic
+image tag (`vMAJOR.MINOR.PATCH`); the stack itself accepts any valid immutable
+tag because it also supports bootstrap and maintenance deploys. The stack
+requires a Supabase session-pooler hostname and the regional CloudFront
 origin-facing prefix list ID:
 
 ```bash
@@ -20,21 +22,31 @@ prefix_list_id=$(aws ec2 describe-managed-prefix-lists \
   --query 'PrefixLists[0].PrefixListId' --output text)
 
 npx cdk synth --no-lookups \
-  -c imageTag=<immutable-tag> \
+  -c imageTag=v1.1.0 \
   -c supabaseHost=<project-pooler-host> \
-  -c cloudFrontOriginPrefixListId="$prefix_list_id"
+  -c cloudFrontOriginPrefixListId="$prefix_list_id" \
+  -c alarmTopicArn=<optional-existing-sns-topic-arn>
 
 npx cdk deploy --require-approval never \
-  -c imageTag=<immutable-tag> \
+  -c imageTag=v1.1.0 \
   -c desiredCount=0 \
   -c supabaseHost=<project-pooler-host> \
-  -c cloudFrontOriginPrefixListId="$prefix_list_id"
+  -c cloudFrontOriginPrefixListId="$prefix_list_id" \
+  -c alarmTopicArn=<optional-existing-sns-topic-arn>
 ```
 
 `desiredCount=0` is the bootstrap deploy: it creates the ECR repository, task
 definitions, load balancer, and CloudFront distribution without starting the
-application. Follow the full sequence in
-[../docs/deployment.md](../docs/deployment.md).
+application. `alarmTopicArn` is optional; when omitted, alarms exist but have
+no notification action. The stack imports an existing topic and never creates
+or subscribes one.
+
+The stack declares ten-tagged/ten-untagged ECR retention. That policy is not
+the live policy until the stack is deployed, and the deployment workflow
+refuses to push an image while the live policy is the older `tagStatus: any`
+rule. Apply the policy before the next release. Follow the full sequence in
+[../docs/deployment.md](../docs/deployment.md) and the release gate in
+[../docs/release-readiness.md](../docs/release-readiness.md).
 
 ## Useful commands
 

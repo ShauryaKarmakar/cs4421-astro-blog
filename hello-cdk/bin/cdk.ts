@@ -19,6 +19,7 @@ const cloudFrontOriginPrefixListIdContext = app.node.tryGetContext(
 const supabaseHostContext = app.node.tryGetContext('supabaseHost');
 const supabasePortContext = app.node.tryGetContext('supabasePort');
 const supabaseDatabaseContext = app.node.tryGetContext('supabaseDatabase');
+const alarmTopicArnContext = app.node.tryGetContext('alarmTopicArn');
 
 new UniBudgetStack(app, 'UniBudgetStack', {
   env: account && region ? { account, region } : undefined,
@@ -42,4 +43,8 @@ new UniBudgetStack(app, 'UniBudgetStack', {
     supabaseDatabaseContext === undefined
       ? undefined
       : String(supabaseDatabaseContext),
+  alarmTopicArn:
+    alarmTopicArnContext === undefined
+      ? undefined
+      : String(alarmTopicArnContext),
 });

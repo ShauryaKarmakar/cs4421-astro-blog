@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       imageTag:
-        description: Immutable image tag to build and deploy
+        description: Immutable semantic release tag (vMAJOR.MINOR.PATCH, optional prerelease) to build and deploy
         required: true
         type: string
       desiredCount:
@@ -43,6 +43,7 @@ env:
   AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
   AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
   SUPABASE_HOST: ${{ vars.SUPABASE_HOST }}
+  ALARM_TOPIC_ARN: ${{ vars.ALARM_TOPIC_ARN }}
   STACK_NAME: UniBudgetStack
   IMAGE_TAG: ${{ inputs.imageTag }}
   DESIRED_COUNT: ${{ inputs.desiredCount }}
@@ -57,6 +58,10 @@ jobs:
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
+        with:
+          # Tag verification needs the release tag, which a depth-1 checkout
+          # does not fetch. This is a single small repository, not a monorepo.
+          fetch-depth: 0
 
       - name: Validate Deployment Inputs
         run: |
@@ -78,6 +83,30 @@ jobs:
           if ! [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "::error::imageTag must be a valid container image tag."
             exit 1
+          fi
+          if ! node scripts/releaseTag.mjs "$IMAGE_TAG"; then
+            echo "::error::imageTag must be a semantic release version such as v2.0.0; branch names and commit SHAs are not release tags."
+            exit 1
+          fi
+          # A normal release must correspond to an annotated Git tag on the
+          # commit being built. Without this check the ECR tag and the OCI
+          # version label could name a release that was never tagged, or a tag
+          # could point at a different commit than the image. A bootstrap run
+          # publishes no image, so it only needs the semver syntax above.
+          if [ "${{ inputs.bootstrapOnly }}" != "true" ]; then
+            if ! git rev-parse -q --verify "refs/tags/$IMAGE_TAG^{commit}" >/dev/null; then
+              echo "::error::Git tag $IMAGE_TAG does not exist. Create and push the annotated release tag on the commit being deployed."
+              exit 1
+            fi
+            if [ "$(git cat-file -t "refs/tags/$IMAGE_TAG")" != "tag" ]; then
+              echo "::error::Git tag $IMAGE_TAG must be an annotated tag, not a lightweight tag."
+              exit 1
+            fi
+            tag_commit=$(git rev-list -n 1 "refs/tags/$IMAGE_TAG")
+            if [ "$tag_commit" != "$GITHUB_SHA" ]; then
+              echo "::error::Git tag $IMAGE_TAG points to $tag_commit, but this run is building $GITHUB_SHA. Dispatch the deployment from the tagged commit."
+              exit 1
+            fi
           fi
           if ! [[ "$DESIRED_COUNT" =~ ^[0-9]+$ ]] || [ "$DESIRED_COUNT" -lt 1 ] || [ "$DESIRED_COUNT" -gt 10 ]; then
             echo "::error::desiredCount must be an explicit integer between 1 and 10. Use a separate stack deploy to scale down."
@@ -229,7 +258,8 @@ jobs:
             -c imageTag="$IMAGE_TAG" \
             -c desiredCount=0 \
             -c supabaseHost="$SUPABASE_HOST" \
-            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST"
+            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST" \
+            -c alarmTopicArn="$ALARM_TOPIC_ARN"
         working-directory: hello-cdk
 
       - name: Read Stack Outputs
@@ -283,6 +313,32 @@ jobs:
             echo "cloudfront_domain_name=$cloudfront_domain"
             echo "application_url=$application_url"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Verify ECR Retention Policy Before Image Push
+        if: inputs.bootstrapOnly != true
+        env:
+          REPOSITORY_URI: ${{ steps.outputs.outputs.repository_uri }}
+        run: |
+          set -euo pipefail
+          expected_prefix="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/"
+          if [[ "$REPOSITORY_URI" != "$expected_prefix"* ]]; then
+            echo "::error::The ECR output is not a repository URI in this account and region."
+            exit 1
+          fi
+          repository_name=${REPOSITORY_URI#"$expected_prefix"}
+          if [ -z "$repository_name" ] || [[ "$repository_name" == *".amazonaws.com"* ]]; then
+            echo "::error::The ECR stack output does not contain a repository name."
+            exit 1
+          fi
+          # Pushing before the stack applies its lifecycle policy is a race:
+          # the live any/5 policy counts each release's OCI index, platform
+          # manifest, and attestation together and can expire the rollback
+          # image first. Fail before the build rather than after the push.
+          policy_text=$(aws ecr get-lifecycle-policy \
+            --repository-name "$repository_name" \
+            --query lifecyclePolicyText \
+            --output text)
+          printf '%s' "$policy_text" | node scripts/ecrLifecyclePolicy.mjs -
 
       - name: Verify CloudFront Delivery Configuration
         if: inputs.bootstrapOnly != true
@@ -515,12 +571,18 @@ jobs:
             --build-arg GIT_REVISION="${GITHUB_SHA:-unknown}" \
             -t "$image_uri" .
           docker push "$image_uri"
-          aws ecr describe-images \
+          image_digest=$(aws ecr describe-images \
             --repository-name "$repository_name" \
             --image-ids imageTag="$IMAGE_TAG" \
             --query 'imageDetails[0].imageDigest' \
-            --output text >/dev/null
+            --output text)
+          if ! [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::ECR did not return a valid digest for $IMAGE_TAG; refusing to deploy an unverified image."
+            exit 1
+          fi
           echo "image_uri=$image_uri" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
+          echo "Published $image_uri at $image_digest" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate Migration Task Configuration
         if: inputs.bootstrapOnly != true
@@ -907,7 +969,8 @@ jobs:
             -c imageTag="$IMAGE_TAG" \
             -c desiredCount="$DESIRED_COUNT" \
             -c supabaseHost="$SUPABASE_HOST" \
-            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST"
+            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST" \
+            -c alarmTopicArn="$ALARM_TOPIC_ARN"
         working-directory: hello-cdk
 
       - name: Wait for the ECS Service
@@ -925,8 +988,13 @@ jobs:
           CLUSTER: ${{ steps.outputs.outputs.cluster }}
           SERVICE: ${{ steps.outputs.outputs.service }}
           IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}
         run: |
           set -euo pipefail
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The workflow did not record a valid image digest; refusing to trust a tag-only verification."
+            exit 1
+          fi
           # A circuit-breaker rollback can leave the old task set healthy. Do
           # not report success unless the service is actually running the image
           # built by this workflow.
@@ -949,7 +1017,27 @@ jobs:
             echo "::error::The ECS service is running $running_image, not the image built by this workflow ($IMAGE_URI)."
             exit 1
           fi
-          echo "ECS service is running the expected image."
+          task_arn=$(aws ecs list-tasks \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --desired-status RUNNING \
+            --query 'taskArns[0]' \
+            --output text)
+          if [ -z "$task_arn" ] || [ "$task_arn" = "None" ]; then
+            echo "::error::The ECS service reported stable but has no running task to verify."
+            exit 1
+          fi
+          task_json=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks "$task_arn" \
+            --output json)
+          if ! jq -e --arg digest "$IMAGE_DIGEST" \
+            'any(.tasks[0].containers[]; .imageDigest == $digest)' \
+            <<<"$task_json" >/dev/null; then
+            echo "::error::The running task is not using the digest published by this workflow ($IMAGE_DIGEST)."
+            exit 1
+          fi
+          echo "ECS service is running the expected image at $IMAGE_DIGEST."
 
       - name: Verify Application Health Through CloudFront
         if: inputs.bootstrapOnly != true
@@ -999,4 +1087,16 @@ jobs:
             exit 1
           fi
           echo "Blog route /blog/${sample_slug} rendered through CloudFront."
+
+          # A catch-all route that renders its not-found page with HTTP 200 is
+          # still a regression. Require an unknown slug to return a real 404.
+          missing_slug="release-check-${RANDOM}-$$"
+          missing_code=$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' \
+            "${APPLICATION_URL%/}/blog/${missing_slug}")
+          if [ "$missing_code" != "404" ]; then
+            echo "::error::The unknown blog slug /blog/${missing_slug} returned $missing_code, expected 404."
+            exit 1
+          fi
+          echo "Unknown blog slugs correctly return 404."
           echo "Application is healthy at $health_url"
