@@ -184,6 +184,11 @@ jobs:
       - name: Install Application Dependencies
         run: npm ci
 
+      # The same suite CI runs on main. A failing test stops the deployment
+      # before any image is built or any AWS resource is changed.
+      - name: Run Tests
+        run: npm test -- --run
+
       - name: Install CDK Dependencies
         run: npm ci
         working-directory: hello-cdk
@@ -502,7 +507,13 @@ jobs:
           image_uri="$REPOSITORY_URI:$IMAGE_TAG"
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
-          docker build -f dockerfile -t "$image_uri" .
+          # The tag is the release version; the commit is recorded as OCI
+          # metadata so the image remains traceable without a second ECR tag
+          # (which would double its lifecycle-policy footprint).
+          docker build -f dockerfile \
+            --build-arg IMAGE_VERSION="$IMAGE_TAG" \
+            --build-arg GIT_REVISION="${GITHUB_SHA:-unknown}" \
+            -t "$image_uri" .
           docker push "$image_uri"
           aws ecr describe-images \
             --repository-name "$repository_name" \
@@ -965,4 +976,27 @@ jobs:
             echo "::error::The login page returned $login_code through CloudFront."
             exit 1
           fi
+
+          # A healthy API and login page do not prove a dynamic content route
+          # renders: /blog/:slug returned 500 in production while /api/health
+          # was green. Render one real entry from this build so a regression in
+          # the route (rather than in the content itself) fails the deployment.
+          # sed rather than head keeps the pipeline free of SIGPIPE under
+          # `set -o pipefail` when the content directory has many entries.
+          sample_slug=$(find src/content/blog -type f \( -name '*.md' -o -name '*.mdx' \) \
+            | sort | sed -n '1p')
+          if [ -z "$sample_slug" ]; then
+            echo "::error::No blog content entry was found to verify the dynamic blog route."
+            exit 1
+          fi
+          sample_slug=${sample_slug#src/content/blog/}
+          sample_slug=${sample_slug%.*}
+          blog_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --retry 12 --retry-delay 5 --retry-connrefused \
+            "${APPLICATION_URL%/}/blog/${sample_slug}")
+          if [ "$blog_code" != "200" ]; then
+            echo "::error::The blog post /blog/${sample_slug} returned $blog_code through CloudFront."
+            exit 1
+          fi
+          echo "Blog route /blog/${sample_slug} rendered through CloudFront."
           echo "Application is healthy at $health_url"

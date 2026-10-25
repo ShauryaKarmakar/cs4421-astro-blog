@@ -1,5 +1,8 @@
 # AWS deployment and database migration guide
 
+> Week 7 deliverable status, evidence, drills, and outstanding work:
+> [week7-deliverables.md](week7-deliverables.md).
+
 ## Architecture and scope
 
 The production database is Supabase PostgreSQL, reached through its **session
@@ -591,7 +594,9 @@ boundary.
 
 ## Subsequent deployments
 
-For an existing stack the workflow:
+For an existing stack the workflow installs the dependencies, runs the
+application test suite (a failure stops the run before any image or AWS change),
+and then:
 
 1. reads `ApplicationUrl`, `CloudFrontDomainName`, and `CloudFrontDistributionId`
    from the stack outputs and verifies that the distribution is `Deployed`,
@@ -621,8 +626,10 @@ For an existing stack the workflow:
    from the same build;
 7. deploys the stack only after migration exit code `0`;
 8. waits for ECS service stability, verifies that the service is running the
-   image this workflow built, and checks `/api/health` and `/login` through the
-   CloudFront HTTPS URL.
+   image this workflow built, and checks `/api/health`, `/login`, and one real
+   `/blog/<slug>` entry from `src/content/blog` through the CloudFront HTTPS
+   URL. The blog check exists because health and login can be green while a
+   dynamic content route still fails.
 
 The workflow requires an explicit `desiredCount` between `1` and `10`; it has
 no default and never silently scales the service to zero. A non-bootstrap run

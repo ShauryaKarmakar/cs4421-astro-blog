@@ -11,6 +11,15 @@ RUN npm run build \
 
 FROM node:24-bookworm-slim AS runtime
 
+# Provenance: the release version and the commit it was built from are
+# recorded in the image, so the tag-to-commit mapping does not depend on the
+# ECR push time or on re-deriving it after the fact. Both default to
+# "unknown" for a local build that does not supply them.
+ARG IMAGE_VERSION=unknown
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.version=$IMAGE_VERSION \
+      org.opencontainers.image.revision=$GIT_REVISION
+
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8080

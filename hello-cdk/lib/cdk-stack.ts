@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -474,6 +475,81 @@ export class UniBudgetStack extends cdk.Stack {
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
         compress: true,
       },
+    });
+
+    // Operational alarms. These are definitions only: CloudWatch delivers no
+    // notification until an operator attaches an SNS topic action, which this
+    // stack intentionally leaves to the account owner (and its subscription
+    // confirmation) instead of creating an unconfirmed topic here.
+    targetGroup.metrics
+      .httpCodeTarget(elbv2.HttpCodeTarget.TARGET_5XX_COUNT, {
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      })
+      .createAlarm(this, 'Target5xxAlarm', {
+        alarmDescription:
+          'More than five 5xx responses from the application targets in ten minutes.',
+        threshold: 5,
+        evaluationPeriods: 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    targetGroup.metrics
+      .unhealthyHostCount({
+        period: cdk.Duration.minutes(1),
+        statistic: 'Maximum',
+      })
+      .createAlarm(this, 'UnhealthyTargetsAlarm', {
+        alarmDescription:
+          'At least one application target reported unhealthy for two consecutive minutes.',
+        threshold: 0,
+        evaluationPeriods: 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    // A bootstrap stack is deliberately scaled to zero, so a task-count alarm
+    // would fire during that intentional state. It is added only once the
+    // stack has a running target count.
+    if (desiredCount > 0) {
+      service
+        .metric('RunningTaskCount', {
+          period: cdk.Duration.minutes(1),
+          statistic: 'Average',
+        })
+        .createAlarm(this, 'RunningTaskCountAlarm', {
+          alarmDescription: `Fewer than ${desiredCount} ECS tasks are running for three consecutive minutes.`,
+          threshold: desiredCount,
+          evaluationPeriods: 3,
+          comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+          // No datapoint means the service emitted none, which is worse than a
+          // low count for an alarm that guards task availability.
+          treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+        });
+    }
+
+    // src/lib/serverLogger.ts writes one JSON object per line to stderr, which
+    // the awslogs driver forwards here. An error event is `{"level":"error"}`.
+    new logs.MetricFilter(this, 'ApplicationErrorMetricFilter', {
+      logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.level', '=', 'error'),
+      metricNamespace: 'UniBudget/Application',
+      metricName: 'StructuredErrorCount',
+      defaultValue: 0,
+    });
+    new cloudwatch.Metric({
+      namespace: 'UniBudget/Application',
+      metricName: 'StructuredErrorCount',
+      statistic: 'Sum',
+      period: cdk.Duration.minutes(5),
+    }).createAlarm(this, 'StructuredErrorAlarm', {
+      alarmDescription:
+        'More than five structured error log events in ten minutes.',
+      threshold: 5,
+      evaluationPeriods: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
     // The public URL is derived from the distribution, never supplied by hand.

@@ -201,6 +201,11 @@ describe('deployment workflow contracts', () => {
     );
     expect(health).toContain('https://[a-z0-9]+\\.cloudfront\\.net');
     expect(health).toContain('/api/health');
+    expect(health).toContain('/login');
+    // Health and login are not enough: render a real content route too.
+    expect(health).toContain('src/content/blog');
+    expect(health).toContain('/blog/${sample_slug}');
+    expect(health).toContain('blog_code');
   });
 
   it('restricts the load balancer to the CloudFront origin-facing prefix list', () => {
@@ -359,6 +364,29 @@ describe('repository hygiene contracts', () => {
     expect(step).not.toContain('--overrides');
     expect(step).not.toContain('update-service');
     expect(workflow).not.toContain('containerOverrides.image');
+  });
+
+  it('records the release version and commit in the image provenance', () => {
+    const build = stepBlock('Build and Push Application Image');
+    const dockerfile = readFileSync(resolve(projectRoot, 'dockerfile'), 'utf8');
+
+    expect(build).toContain('--build-arg IMAGE_VERSION="$IMAGE_TAG"');
+    expect(build).toContain(
+      '--build-arg GIT_REVISION="${GITHUB_SHA:-unknown}"',
+    );
+    expect(dockerfile).toContain('org.opencontainers.image.version');
+    expect(dockerfile).toContain('org.opencontainers.image.revision');
+  });
+
+  it('runs the application test suite before building the image', () => {
+    const testsIndex = workflow.indexOf('      - name: Run Tests\n');
+    const buildIndex = workflow.indexOf(
+      '      - name: Build and Push Application Image\n',
+    );
+
+    expect(testsIndex).toBeGreaterThan(-1);
+    expect(testsIndex).toBeLessThan(buildIndex);
+    expect(stepBlock('Run Tests')).toContain('npm test -- --run');
   });
 
   it('gates the rollout on the migration and reuses the same image tag', () => {

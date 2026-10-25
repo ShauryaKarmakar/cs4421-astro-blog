@@ -538,4 +538,100 @@ describe('UniBudget infrastructure', () => {
       Ref: expect.stringContaining('SupabaseCaCertificate'),
     });
   });
+
+  test('alarms on target 5xx, unhealthy targets, missing tasks, and structured errors', () => {
+    const template = createTemplate({ desiredCount: 1 });
+    const alarms = Object.values(
+      template.findResources('AWS::CloudWatch::Alarm'),
+    );
+    const propertiesByMetric = Object.fromEntries(
+      alarms.map((alarm) => [alarm.Properties.MetricName, alarm.Properties]),
+    );
+
+    expect(alarms).toHaveLength(4);
+    expect(propertiesByMetric.HTTPCode_Target_5XX_Count).toMatchObject({
+      Namespace: 'AWS/ApplicationELB',
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 5,
+      ComparisonOperator: 'GreaterThanThreshold',
+      EvaluationPeriods: 2,
+      TreatMissingData: 'notBreaching',
+      Dimensions: expect.arrayContaining([
+        { Name: 'TargetGroup', Value: expect.anything() },
+      ]),
+    });
+    expect(propertiesByMetric.UnHealthyHostCount).toMatchObject({
+      Namespace: 'AWS/ApplicationELB',
+      Statistic: 'Maximum',
+      Period: 60,
+      Threshold: 0,
+      ComparisonOperator: 'GreaterThanThreshold',
+      EvaluationPeriods: 2,
+      TreatMissingData: 'notBreaching',
+    });
+    expect(propertiesByMetric.RunningTaskCount).toMatchObject({
+      Namespace: 'AWS/ECS',
+      Statistic: 'Average',
+      Period: 60,
+      Threshold: 1,
+      ComparisonOperator: 'LessThanThreshold',
+      EvaluationPeriods: 3,
+      TreatMissingData: 'breaching',
+      Dimensions: expect.arrayContaining([
+        { Name: 'ServiceName', Value: expect.anything() },
+        { Name: 'ClusterName', Value: expect.anything() },
+      ]),
+    });
+    expect(propertiesByMetric.StructuredErrorCount).toMatchObject({
+      Namespace: 'UniBudget/Application',
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 5,
+      ComparisonOperator: 'GreaterThanThreshold',
+      EvaluationPeriods: 2,
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  test('counts structured error log events and leaves notification actions to the operator', () => {
+    const template = createTemplate({ desiredCount: 1 });
+    const filters = Object.values(
+      template.findResources('AWS::Logs::MetricFilter'),
+    );
+    const alarms = Object.values(
+      template.findResources('AWS::CloudWatch::Alarm'),
+    );
+
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties).toMatchObject({
+      FilterPattern: '{ $.level = "error" }',
+      MetricTransformations: [
+        {
+          MetricNamespace: 'UniBudget/Application',
+          MetricName: 'StructuredErrorCount',
+          MetricValue: '1',
+          DefaultValue: 0,
+        },
+      ],
+    });
+    // No SNS topic or action is created: an unconfirmed subscription would be
+    // worse than an explicit operator step.
+    expect(
+      alarms.every((alarm) => alarm.Properties.AlarmActions === undefined),
+    ).toBe(true);
+    template.resourceCountIs('AWS::SNS::Topic', 0);
+  });
+
+  test('omits the task-count alarm while a bootstrap stack is scaled to zero', () => {
+    const template = createTemplate();
+    const alarms = Object.values(
+      template.findResources('AWS::CloudWatch::Alarm'),
+    );
+
+    expect(alarms).toHaveLength(3);
+    expect(
+      alarms.some((alarm) => alarm.Properties.MetricName === 'RunningTaskCount'),
+    ).toBe(false);
+  });
 });
