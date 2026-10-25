@@ -529,7 +529,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${IMAGE_URI:-}" ]; then
-            echo "::error::The built image URI is empty; refusing to migrate without an explicit image override."
+            echo "::error::The built image URI is empty; refusing to migrate without the image this run built."
             exit 1
           fi
           cluster_status=$(aws ecs describe-clusters \
@@ -721,7 +721,7 @@ jobs:
           require_exact_secret APP_DATABASE_PASSWORD "$SUPABASE_APPLICATION_SECRET_ARN" ':password::'
           require_exact_secret SUPABASE_CA_CERT "$SUPABASE_CA_SECRET_ARN" ''
 
-          echo "Migration task configuration matches the current host, role ARNs, image override, and exact secret ARNs and JSON keys."
+          echo "Migration task configuration matches the current host, role ARNs, and exact secret ARNs and JSON keys."
 
       - name: Run the One-Off Migration Task
         if: inputs.bootstrapOnly != true
@@ -735,6 +735,9 @@ jobs:
           set -euo pipefail
           task_arn=""
           task_finished="false"
+          temporary_task_definition=""
+          definition_file=$(mktemp)
+          registration_file=$(mktemp)
 
           cleanup() {
             status=$?
@@ -746,20 +749,73 @@ jobs:
                 --task "$task_arn" \
                 --reason "Deployment cancelled or migration step failed" >/dev/null || true
             fi
+            # Deregister only after the one-off task has stopped or was never
+            # started. The revision is never used by the ECS service, so this
+            # cannot change the application rollout or its rollback target.
+            if [ -n "$temporary_task_definition" ]; then
+              if [ -z "$task_arn" ] || [ "$task_finished" = "true" ]; then
+                echo "Deregistering temporary migration task definition $temporary_task_definition."
+                aws ecs deregister-task-definition \
+                  --task-definition "$temporary_task_definition" >/dev/null || \
+                  echo "::warning::Could not deregister $temporary_task_definition."
+              else
+                echo "::warning::Leaving $temporary_task_definition registered because the migration task has not stopped."
+              fi
+            fi
+            rm -f "$definition_file" "$registration_file"
             exit "$status"
           }
           trap cleanup EXIT
           trap 'exit 130' INT TERM
 
+          # ECS container overrides have no image field (the API rejects it with
+          # ParamValidation). Build a one-off revision from the stack's current
+          # migration definition with only its image replaced by the immutable
+          # tag this run built. Roles, environment, secrets, logging, runtime
+          # platform, and command are preserved by the builder.
+          aws ecs describe-task-definition \
+            --task-definition "$MIGRATION_TASK_DEFINITION" \
+            --query 'taskDefinition' \
+            --output json > "$definition_file"
+
+          node scripts/migrationTaskDefinition.mjs \
+            "$definition_file" "$IMAGE_URI" > "$registration_file"
+
+          temporary_task_definition=$(aws ecs register-task-definition \
+            --cli-input-json "file://$registration_file" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          if [ -z "$temporary_task_definition" ] || [ "$temporary_task_definition" = "None" ]; then
+            echo "::error::ECS did not return an ARN for the temporary migration task definition."
+            temporary_task_definition=""
+            exit 1
+          fi
+          echo "Registered temporary migration task definition: $temporary_task_definition"
+
+          registered_image=$(aws ecs describe-task-definition \
+            --task-definition "$temporary_task_definition" \
+            --query "taskDefinition.containerDefinitions[?name=='MigrationContainer'].image" \
+            --output text)
+          if [ "$registered_image" != "$IMAGE_URI" ]; then
+            echo "::error::The temporary migration task definition runs $registered_image, not $IMAGE_URI from this build."
+            exit 1
+          fi
+
+          # One run-task call returns both the ARN and, when the task could not
+          # be placed, the failure reason. Never retry here: a retry could start
+          # a second migration.
           run_output=$(aws ecs run-task \
             --cluster "$CLUSTER" \
-            --task-definition "$MIGRATION_TASK_DEFINITION" \
+            --task-definition "$temporary_task_definition" \
             --launch-type FARGATE \
             --count 1 \
             --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"MigrationContainer\",\"image\":\"$IMAGE_URI\"}]}")
-          task_arn=$(jq -r '.tasks[0].taskArn // empty' <<<"$run_output")
-          failure_reason=$(jq -r '.failures[0].reason // empty' <<<"$run_output")
+            --query '[tasks[0].taskArn, failures[0].reason]' \
+            --output text)
+          IFS=$'\t' read -r task_arn failure_reason <<<"$run_output"
+          if [ "$task_arn" = "None" ]; then
+            task_arn=""
+          fi
           if [ -z "$task_arn" ]; then
             echo "::error::ECS did not start the migration task: ${failure_reason:-unknown reason}"
             exit 1
@@ -768,12 +824,11 @@ jobs:
 
           deadline=$((SECONDS + 1800))
           while [ "$SECONDS" -lt "$deadline" ]; do
-            description=$(aws ecs describe-tasks \
+            last_status=$(aws ecs describe-tasks \
               --cluster "$CLUSTER" \
               --tasks "$task_arn" \
-              --query 'tasks[0]' \
-              --output json)
-            last_status=$(jq -r '.lastStatus // empty' <<<"$description")
+              --query 'tasks[0].lastStatus' \
+              --output text)
             if [ "$last_status" = "STOPPED" ]; then
               task_finished="true"
               break
@@ -786,12 +841,40 @@ jobs:
               --cluster "$CLUSTER" \
               --task "$task_arn" \
               --reason "Migration exceeded the 30-minute deployment limit" >/dev/null || true
-            task_finished="true"
+            # stop-task is asynchronous. Cleanup may only deregister the
+            # temporary revision once ECS reports STOPPED, so wait for that
+            # instead of assuming the stop request finished the task. If this
+            # bounded wait expires, task_finished stays false and cleanup
+            # leaves the revision registered.
+            stop_deadline=$((SECONDS + 120))
+            while [ "$SECONDS" -lt "$stop_deadline" ]; do
+              last_status=$(aws ecs describe-tasks \
+                --cluster "$CLUSTER" \
+                --tasks "$task_arn" \
+                --query 'tasks[0].lastStatus' \
+                --output text)
+              if [ "$last_status" = "STOPPED" ]; then
+                task_finished="true"
+                break
+              fi
+              sleep 5
+            done
+            if [ "$task_finished" != "true" ]; then
+              echo "::warning::Migration task $task_arn has not reached STOPPED; leaving the temporary task definition registered."
+            fi
             exit 1
           fi
 
-          stopped_reason=$(jq -r '.stoppedReason // empty' <<<"$description")
-          exit_codes=$(jq -r '[.containers[].exitCode // empty] | map(tostring) | join(",")' <<<"$description")
+          stopped_reason=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks "$task_arn" \
+            --query 'tasks[0].stoppedReason' \
+            --output text)
+          exit_codes=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks "$task_arn" \
+            --query 'tasks[0].containers[*].exitCode' \
+            --output text)
           if [ "$exit_codes" != "0" ]; then
             echo "::error::Migration task stopped with exit codes [$exit_codes]: $stopped_reason"
             exit 1

@@ -313,20 +313,55 @@ A normal deployment is refused while the stack does not exist, and
 2. Populate the three Supabase secrets.
 3. Authenticate to ECR using the `ImageRepositoryUri` stack output, then build
    and push the same tag. Never reuse an existing immutable tag.
-4. Run the migration task using the stack's `MigrationTaskDefinitionArn`, its
-   `PublicSubnetIds`, and `ApplicationSecurityGroupId`, with an **explicit image
-   override** to the image you just pushed:
+4. Run the migration task on the image you just pushed. ECS container
+   overrides have no `image` field, so `run-task --overrides` cannot select an
+   image; the one-off task has to reference it in a task definition. Register a
+   temporary revision from the stack's current migration definition with only
+   the image replaced:
 
    ```bash
+   aws ecs describe-task-definition \
+     --task-definition "$MIGRATION_TASK_DEFINITION_ARN" \
+     --query 'taskDefinition' \
+     --output json > /tmp/migration-task.json
+
+   node scripts/migrationTaskDefinition.mjs \
+     /tmp/migration-task.json "$IMAGE_URI" > /tmp/migration-registration.json
+
+   one_off_task_definition=$(aws ecs register-task-definition \
+     --cli-input-json file:///tmp/migration-registration.json \
+     --query 'taskDefinition.taskDefinitionArn' \
+     --output text)
+
    aws ecs run-task \
      --cluster "$CLUSTER_NAME" \
-     --task-definition "$MIGRATION_TASK_DEFINITION_ARN" \
+     --task-definition "$one_off_task_definition" \
      --launch-type FARGATE \
-     --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SECURITY_GROUP_ID],assignPublicIp=ENABLED}" \
-     --overrides "{\"containerOverrides\":[{\"name\":\"MigrationContainer\",\"image\":\"$REPOSITORY_URI:$IMAGE_TAG\"}]}"
+     --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SECURITY_GROUP_ID],assignPublicIp=ENABLED}"
    ```
 
-   Wait for the task to stop and require every container exit code to be `0`.
+   `scripts/migrationTaskDefinition.mjs` copies the described definition's
+   family, roles, CPU and memory, network mode, runtime platform, environment,
+   secrets, and logging, and changes nothing except the `MigrationContainer`
+   image. It fails if the definition has no `MigrationContainer`, if the image
+   reference is empty, contains whitespace, or carries no tag or digest, and it
+   never sends the read-only fields that `register-task-definition` rejects. It
+   also fails if the described definition has a field it does not know how to
+   preserve, instead of silently dropping configuration.
+
+   Confirm the revision before running it:
+
+   ```bash
+   aws ecs describe-task-definition \
+     --task-definition "$one_off_task_definition" \
+     --query "taskDefinition.containerDefinitions[?name=='MigrationContainer'].image" \
+     --output text
+   ```
+
+   Wait until `describe-tasks` reports `STOPPED`, require every container exit
+   code to be `0`, and only then deregister the one-off revision; the service
+   never references it:
+   `aws ecs deregister-task-definition --task-definition "$one_off_task_definition"`.
    Do not continue to a rollout if the migration fails. Run the migration a
    second time to confirm checksum/idempotency behavior.
 5. Deploy again with the same image tag, pooler host, prefix list ID, and the
@@ -417,12 +452,19 @@ The GitHub deploy role needs these actions for the commands in
 | CloudFormation | `CreateStack`, `UpdateStack`, `DescribeStacks`, `DescribeStackEvents`, `DescribeStackResources`, `ListStackResources`, `GetTemplate`, `GetTemplateSummary`, `CreateChangeSet`, `DescribeChangeSet`, `ExecuteChangeSet`, `DeleteChangeSet` | The `UniBudgetStack` stack |
 | ECR | `GetAuthorizationToken` | `*` |
 | ECR | `DescribeImages`, `BatchCheckLayerAvailability`, `InitiateLayerUpload`, `UploadLayerPart`, `CompleteLayerUpload`, `PutImage` | The `UniBudgetStack` repository |
-| ECS | `DescribeClusters`, `DescribeServices`, `DescribeTaskDefinition`, `DescribeTasks`, `RunTask`, `StopTask` | The `UniBudgetStack` cluster, service, and task definitions |
+| ECS | `DescribeClusters`, `DescribeServices`, `DescribeTaskDefinition`, `DescribeTasks`, `RunTask`, `StopTask`, `RegisterTaskDefinition`, `DeregisterTaskDefinition` | The `UniBudgetStack` cluster and service, plus the `UniBudgetStack` task definition families for the task-definition actions |
 | IAM | `GetRole`, `PassRole` | The stack roles listed below; do not use `*` |
 | S3 / SSM | Read/write the CDK bootstrap bucket and read its version parameter | The CDK bootstrap resources |
 
 `ecs:DescribeTaskDefinition` is required by the workflow's validation of **both**
-task definitions; it is not optional. `ec2:DescribeManagedPrefixLists` is
+task definitions, and by the migration step's read-back of the one-off
+revision; it is not optional. `ecs:RegisterTaskDefinition` and
+`ecs:DeregisterTaskDefinition` are required because the migration runs on a
+temporary revision that pins the newly built image; ECS has no image
+override, so without those two actions the migration step fails before
+`RunTask`. Scope them to the migration task definition family. Registering
+the revision also passes the task and execution roles, so the `iam:PassRole`
+entry above must include both migration roles. `ec2:DescribeManagedPrefixLists` is
 required because the workflow resolves the CloudFront origin-facing prefix list
 and passes its ID to the stack. `cloudfront:GetDistribution` and
 `cloudfront:GetDistributionConfig` read the deployed distribution back, and
@@ -567,8 +609,16 @@ For an existing stack the workflow:
    the stack outputs, the application container's exact environment variables
    and secret references, and the migration container command, `PGHOST`,
    `PGPORT`, `PGDATABASE`, `PGSSLMODE`, and exact secret names and ARNs;
-6. runs the migration task with an explicit image override and stops it if the
-   job is cancelled or exceeds 30 minutes;
+6. registers a one-off revision of the migration task definition whose only
+   change is the image this run built, verifies that revision's
+   `MigrationContainer` image, and runs it. It waits up to 30 minutes; if that
+   expires it stops the task and waits up to two more minutes for ECS to report
+   `STOPPED`. The one-off revision is deregistered only after that confirmation,
+   or after a task that failed on its own had already stopped. On cancellation,
+   or when the stop cannot be confirmed, the task is stopped but the revision is
+   left registered for inspection. The ECS service is never scaled down or
+   pointed at the temporary revision, and the rollout still uses `$IMAGE_TAG`
+   from the same build;
 7. deploys the stack only after migration exit code `0`;
 8. waits for ECS service stability, verifies that the service is running the
    image this workflow built, and checks `/api/health` and `/login` through the
@@ -589,8 +639,8 @@ check by overriding task environment values.
 
 Changing the pooler host needs a maintenance deployment: deploy the stack with
 `desiredCount=0` so the application is not restarted against the old host,
-confirm the new migration task definition, run the migration with an explicit
-image override, then deploy the approved running count. Schedule the window and
+confirm the new migration task definition, run the migration on a one-off revision
+pinned to the image you pushed, then deploy the approved running count. Schedule the window and
 confirm the new pooler host and credentials in a disposable environment first.
 
 ### Upgrading an existing UniBudgetStack
@@ -842,9 +892,15 @@ after the restore point; communicate that data-loss window before proceeding.
 ## Rollback and its limits
 
 - **Application:** the ECS deployment circuit breaker rolls back a failed
-  service deployment. Immutable previous image tags remain in ECR. If the
-  application password changed, redeploying the old image also requires
-  restoring the matching old password value or rotating the role again.
+  service deployment. The ECR lifecycle policy keeps the ten most recent
+  tagged releases, and each push adds a tagged OCI index plus untagged
+  platform and attestation manifests; the policy counts those separately.
+  ECR will not expire an untagged child while a tagged index references it,
+  so a retained tag's manifest and attestation survive until that index is
+  expired. The window is still finite: confirm the target tag is present with
+  `aws ecr describe-images` before relying on it. If the application password
+  changed, redeploying the old image also requires restoring the matching old
+  password value or rotating the role again.
 - **Database:** migrations are forward-only; there are no down scripts.
   Recovery is a Supabase backup or point-in-time restore to a recorded point.
   Restoring the database does not restore the ECR image or ECS task definition;
@@ -855,12 +911,27 @@ after the restore point; communicate that data-loss window before proceeding.
 - **RDS:** decommissioning requires a verified snapshot, an explicit cost
   decision, and a plan for its security group.
 
+The ECR lifecycle policy in `hello-cdk/lib/cdk-stack.ts` keeps ten tagged
+images and ten untagged images. That rule is a proposal in the stack
+definition: it takes effect only after the stack is deployed, so until then
+the repository keeps whatever policy is live in ECR and the running `v1`
+image is not protected by the new rule yet. Applying it requires a
+lifecycle-policy preview first: the preview lists the digests that would expire and does not
+delete anything. A single rule with `tagStatus: any` is not equivalent,
+because one push contributes three images (the tagged index, the amd64
+manifest, and the BuildKit attestation) to that count.
+
 ## Costs and retained resources
 
 The retained RDS instance, its generated secrets, the ECR repository, and the
 log group continue to incur charges after the Supabase cutover. Do not remove
 RDS from the stack until a snapshot has been verified and the retention and
 billing decision is approved.
+
+An AWS account on the Free plan rejects any RDS backup retention period above
+one day. The stack requests exactly one day, the largest value that plan accepts
+while keeping automated backups enabled (zero would disable them). Raise it back
+to seven days after upgrading to a Paid plan.
 
 Other recurring charges include the ALB, CloudFront requests and data transfer,
 Fargate tasks, public IPv4 addresses, ECR storage and scanning, CloudWatch log

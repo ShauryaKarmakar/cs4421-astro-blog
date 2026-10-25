@@ -28,7 +28,8 @@ describe('UniBudget infrastructure', () => {
       PubliclyAccessible: false,
       MultiAZ: false,
       DeletionProtection: true,
-      BackupRetentionPeriod: 7,
+      // The account free plan rejects any higher retention period.
+      BackupRetentionPeriod: 1,
       VPCSecurityGroups: Match.anyValue(),
       DBSubnetGroupName: Match.anyValue(),
     });
@@ -201,6 +202,61 @@ describe('UniBudget infrastructure', () => {
       Protocol: 'HTTP',
       DefaultActions: Match.arrayWith([Match.objectLike({ Type: 'forward' })]),
     });
+  });
+
+  test('retains tagged releases separately from untagged manifests', () => {
+    const template = createTemplate();
+    const repositories = Object.values(
+      template.findResources('AWS::ECR::Repository'),
+    );
+
+    expect(repositories).toHaveLength(1);
+    const policyText = repositories[0].Properties.LifecyclePolicy
+      ?.LifecyclePolicyText;
+    expect(typeof policyText).toBe('string');
+    const rules = (
+      JSON.parse(policyText as string) as {
+        rules: Array<{
+          rulePriority: number;
+          selection: {
+            tagStatus: string;
+            tagPatternList?: string[];
+            countType: string;
+            countNumber: number;
+          };
+          action: { type: string };
+        }>;
+      }
+    ).rules;
+
+    // A docker push creates three ECR images (index, platform manifest,
+    // attestation). Counting all of them in one "any" rule with a small limit
+    // expires deployable releases after one or two pushes, so tagged indexes
+    // and untagged artifacts are counted separately.
+    expect(rules).toEqual([
+      expect.objectContaining({
+        rulePriority: 1,
+        selection: {
+          tagStatus: 'tagged',
+          tagPatternList: ['*'],
+          countType: 'imageCountMoreThan',
+          countNumber: 10,
+        },
+        action: { type: 'expire' },
+      }),
+      expect.objectContaining({
+        rulePriority: 2,
+        selection: expect.objectContaining({
+          tagStatus: 'untagged',
+          countType: 'imageCountMoreThan',
+          countNumber: 10,
+        }),
+        action: { type: 'expire' },
+      }),
+    ]);
+    expect(
+      rules.some(({ selection }) => selection.tagStatus === 'any'),
+    ).toBe(false);
   });
 
   test('serves HTTPS from the AWS-generated CloudFront hostname without a custom domain', () => {

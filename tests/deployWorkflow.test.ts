@@ -337,4 +337,80 @@ describe('repository hygiene contracts', () => {
     expect(gitignore).toContain('/artifacts/');
     expect(gitignore).toContain('/.cloud-attachments/');
   });
+
+  it('migrates with a temporary revision built from the newly built image', () => {
+    const step = stepBlock('Run the One-Off Migration Task');
+
+    expect(step).toContain('IMAGE_URI: ${{ steps.image.outputs.image_uri }}');
+    expect(step).toContain(
+      'MIGRATION_TASK_DEFINITION: ${{ steps.outputs.outputs.migration_task_definition }}',
+    );
+    expect(step).toContain('node scripts/migrationTaskDefinition.mjs');
+    expect(step).toContain('"$definition_file" "$IMAGE_URI"');
+    expect(step).toContain('--cli-input-json "file://$registration_file"');
+    expect(step).toContain(
+      "taskDefinition.containerDefinitions[?name=='MigrationContainer'].image",
+    );
+    expect(step).toContain('if [ "$registered_image" != "$IMAGE_URI" ]; then');
+
+    // register-task-definition rejects an image override, and the service must
+    // never be scaled down to migrate.
+    expect(step).not.toContain('containerOverrides');
+    expect(step).not.toContain('--overrides');
+    expect(step).not.toContain('update-service');
+    expect(workflow).not.toContain('containerOverrides.image');
+  });
+
+  it('gates the rollout on the migration and reuses the same image tag', () => {
+    const build = stepBlock('Build and Push Application Image');
+    expect(build).toContain('image_uri="$REPOSITORY_URI:$IMAGE_TAG"');
+    expect(build).toContain('echo "image_uri=$image_uri" >> "$GITHUB_OUTPUT"');
+
+    const migrationIndex = workflow.indexOf(
+      '      - name: Run the One-Off Migration Task\n',
+    );
+    const deployIndex = workflow.indexOf(
+      '      - name: Deploy the Stack with the Migrated Image\n',
+    );
+    expect(migrationIndex).toBeGreaterThan(-1);
+    expect(migrationIndex).toBeLessThan(deployIndex);
+
+    expect(stepBlock('Deploy the Stack with the Migrated Image')).toContain(
+      '-c imageTag="$IMAGE_TAG"',
+    );
+    expect(stepBlock('Verify the Running Image')).toContain(
+      'IMAGE_URI: ${{ steps.image.outputs.image_uri }}',
+    );
+  });
+
+  it('deregisters the temporary revision only after the migration task stops', () => {
+    const step = stepBlock('Run the One-Off Migration Task');
+    const cleanupStart = step.indexOf('cleanup() {');
+    const cleanup = step.slice(cleanupStart, step.indexOf('trap cleanup EXIT'));
+
+    expect(cleanupStart).toBeGreaterThan(-1);
+    expect(cleanup).toContain('aws ecs stop-task');
+    expect(cleanup).toContain('aws ecs deregister-task-definition');
+    expect(cleanup).toContain('[ "$task_finished" = "true" ]');
+    expect(cleanup.indexOf('stop-task')).toBeLessThan(
+      cleanup.indexOf('deregister-task-definition'),
+    );
+  });
+
+  it('confirms STOPPED before the timeout path can deregister the revision', () => {
+    const step = stepBlock('Run the One-Off Migration Task');
+    const timeoutStart = step.indexOf('did not finish within 30 minutes');
+    const timeoutBlock = step.slice(timeoutStart, step.indexOf('stopped_reason='));
+
+    expect(timeoutStart).toBeGreaterThan(-1);
+    expect(timeoutBlock).toContain('stop_deadline=$((SECONDS + 120))');
+    expect(timeoutBlock).toContain('if [ "$last_status" = "STOPPED" ]');
+    expect(timeoutBlock).toContain('task_finished="true"');
+    expect(timeoutBlock).toContain(
+      'leaving the temporary task definition registered',
+    );
+    expect(
+      timeoutBlock.indexOf('if [ "$last_status" = "STOPPED" ]'),
+    ).toBeLessThan(timeoutBlock.indexOf('task_finished="true"'));
+  });
 });

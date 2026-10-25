@@ -206,10 +206,33 @@ export class UniBudgetStack extends cdk.Stack {
       'PEM CA certificate downloaded from the Supabase project database settings.',
     );
 
+    // A docker push of this build lands three images in ECR: the tagged OCI
+    // index, the amd64 manifest it references, and a BuildKit attestation.
+    // A single rule with tagStatus "any" counts all three, so a small
+    // maxImageCount expires deployable tags after one or two releases and
+    // destroys the rollback history. Retain tagged releases by themselves,
+    // and clean untagged manifests separately; ECR never expires an untagged
+    // child while a tagged index still references it.
     const repository = new ecr.Repository(this, 'ApplicationRepository', {
       imageTagMutability: ecr.TagMutability.IMMUTABLE,
       imageScanOnPush: true,
-      lifecycleRules: [{ maxImageCount: 5 }],
+      lifecycleRules: [
+        {
+          description:
+            'Retain the ten most recent tagged releases as rollback candidates.',
+          tagStatus: ecr.TagStatus.TAGGED,
+          // A wildcard keeps the rule independent of the tag naming scheme
+          // while still counting only tagged indexes.
+          tagPatternList: ['*'],
+          maxImageCount: 10,
+        },
+        {
+          description:
+            'Expire untagged manifests and attestations no longer referenced by a tagged release.',
+          tagStatus: ecr.TagStatus.UNTAGGED,
+          maxImageCount: 10,
+        },
+      ],
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
@@ -231,7 +254,12 @@ export class UniBudgetStack extends cdk.Stack {
       storageEncrypted: true,
       publiclyAccessible: false,
       multiAz: false,
-      backupRetention: cdk.Duration.days(7),
+      // One day is the largest automated-backup window this account accepts:
+      // the free plan rejects anything above it with "The specified backup
+      // retention period exceeds the maximum available to free tier customers".
+      // Zero would disable automated backups entirely, so one day keeps
+      // point-in-time restore for the previous 24 hours.
+      backupRetention: cdk.Duration.days(1),
       deletionProtection: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       autoMinorVersionUpgrade: true,
