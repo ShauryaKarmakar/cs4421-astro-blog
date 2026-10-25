@@ -53,6 +53,9 @@ jobs:
       - name: Check Astro
         run: npm run check
 
+      - name: Check Static Site
+        run: npm run check:static
+
       - name: Run ESLint
         run: npm run lint
 
@@ -61,6 +64,12 @@ jobs:
 
       - name: Build Astro Site
         run: npm run build
+
+      - name: Build Static Site
+        run: npm run build:static
+
+      - name: Verify Static Build Output
+        run: node scripts/verifyStaticBuild.mjs
 
       - name: Build Docker Image
         run: docker build -f dockerfile -t unibudget:ssr .
@@ -99,4 +108,16 @@ jobs:
           -c imageTag=ci-synth
           -c supabaseHost=aws-0-eu-central-1.pooler.supabase.com
           -c cloudFrontOriginPrefixListId=pl-0123456789abcdef0
+        working-directory: hello-cdk
+
+      - name: Synthesize Monitoring Stack
+        run: >-
+          npx cdk synth UniBudgetStack-Monitoring --no-lookups
+          -c monitoringOnly=true
+          -c desiredCount=1
+          -c alarmTopicArn=arn:aws:sns:us-east-1:111111111111:unibudget-ci-alarms
+          -c loadBalancerFullName=app/UniBudgetCI/1234567890abcdef
+          -c targetGroupFullName=targetgroup/UniBudgetCI/1234567890abcdef
+          -c clusterName=unibudget-ci-cluster
+          -c serviceName=unibudget-ci-service
         working-directory: hello-cdk
