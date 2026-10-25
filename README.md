@@ -77,3 +77,17 @@ in [deployment and migration guidance](./docs/deployment.md). The original RDS
 resources remain in the CDK stack but are no longer used by the application;
 they must not be removed without a verified snapshot and an approved cost
 decision.
+
+## Operations and release documentation
+
+- [Release readiness and deployment gate](./docs/release-readiness.md)
+- [CloudWatch alarms and operator triage](./docs/alarms.md)
+- [Architecture decision records](./docs/adr/README.md)
+- [IAM least-privilege assessment](./docs/iam-least-privilege.md)
+- [Rollback Drill 2 runbook](./docs/rollback-drill-2.md)
+- [Week 7 deliverables and evidence](./docs/week7-deliverables.md)
+
+The current production image is `v1`, which predates the blog SSR fix; verify
+`/blog/<slug>` after the next approved release. The readiness document lists
+the remaining external blockers (ECR policy, alarm notifications, IAM scope,
+release tag, and the unexecuted rollback drill).

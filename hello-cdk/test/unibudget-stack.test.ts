@@ -634,4 +634,26 @@ describe('UniBudget infrastructure', () => {
       alarms.some((alarm) => alarm.Properties.MetricName === 'RunningTaskCount'),
     ).toBe(false);
   });
+
+  test('attaches an operator-supplied SNS topic to every alarm', () => {
+    const topicArn = 'arn:aws:sns:us-east-1:111111111111:unibudget-alerts';
+    const template = createTemplate({ desiredCount: 1, alarmTopicArn: topicArn });
+    const alarms = Object.values(
+      template.findResources('AWS::CloudWatch::Alarm'),
+    );
+
+    expect(alarms).toHaveLength(4);
+    for (const alarm of alarms) {
+      expect(alarm.Properties.AlarmActions).toEqual([topicArn]);
+    }
+    // The topic is imported, not created: its subscribers stay an explicit
+    // operator responsibility.
+    template.resourceCountIs('AWS::SNS::Topic', 0);
+  });
+
+  test('rejects a malformed alarm topic ARN', () => {
+    expect(() =>
+      createTemplate({ alarmTopicArn: 'https://sns.example.com/alerts' }),
+    ).toThrow(/alarmTopicArn must be an SNS topic ARN/);
+  });
 });

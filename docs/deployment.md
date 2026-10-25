@@ -2,6 +2,10 @@
 
 > Week 7 deliverable status, evidence, drills, and outstanding work:
 > [week7-deliverables.md](week7-deliverables.md).
+>
+> Final release readiness and the deployment gate:
+> [release-readiness.md](release-readiness.md). Architecture decisions:
+> [docs/adr/README.md](adr/README.md).
 
 ## Architecture and scope
 
@@ -198,6 +202,34 @@ every few minutes. The trade-off is that ECS will not replace a task whose
 process is alive but whose database connection is broken; that task is
 reused when the dependency recovers instead of being restarted.
 
+## Observability and alerts
+
+The application writes to `/unibudget/ecs/application` with seven-day
+retention. `src/lib/serverLogger.ts` emits one JSON object per line to stderr
+with `level`, `event`, `errorName`, and an optional AWS error `code`; it never
+logs credentials, SQL, session tokens, or user data.
+
+The CDK stack defines a metric filter for `{ $.level = "error" }` and four
+alarms:
+
+| Alarm | Meaning and first diagnostic |
+| --- | --- |
+| Target 5xx | More than five target 5xx responses in ten minutes; inspect the latest error events and the running digest. |
+| Unhealthy targets | A target is failing `/api/health`; check database reachability, role assertion, and task logs. |
+| Running tasks | Fewer tasks than the desired count for three minutes; inspect ECS events, task stop reasons, and capacity. |
+| Structured errors | More than five error log events in ten minutes; query Logs Insights by `level = "error"` and `event`. |
+
+Alarm notifications require an existing SNS topic with a confirmed
+subscription. Create the topic and subscription with an approved operator
+identity, then set the protected repository variable `ALARM_TOPIC_ARN` and
+deploy the stack with that context. The workflow passes it to both CDK deploy
+steps. The stack imports the topic and does not create or subscribe one. As of
+2026-10-25 no alarms exist in the account and no topic is wired, so this is a
+prepared design, not a working notification path. The exact topic policy,
+subscription confirmation, and per-alarm triage steps are in
+[alarms.md](alarms.md); a direct SNS publish does not prove that CloudWatch is
+allowed to publish to the topic.
+
 ## HTTPS and the CloudFront distribution
 
 The public entry point is an Amazon CloudFront distribution in front of the
@@ -388,6 +420,10 @@ Configure these repository or environment variables:
 - `AWS_REGION`
 - `AWS_ACCOUNT_ID`
 - `SUPABASE_HOST`
+- `ALARM_TOPIC_ARN` — optional; an existing, operator-managed SNS topic with a
+  confirmed subscription and a policy that allows `cloudwatch.amazonaws.com` to
+  publish. Without it the alarms are deployed but notify nobody. See
+  [alarms.md](alarms.md).
 
 The CloudFront hostname and the origin-facing prefix list ID are not repository
 variables: the workflow reads the hostname from the stack outputs and looks up
@@ -592,29 +628,67 @@ Do not add `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY` to GitHub. The OIDC
 trust policy and the `production` environment approval are the authorization
 boundary.
 
+The role `unibudget-github-deploy` was verified on 2026-10-25 to still have the
+AWS-managed `AdministratorAccess` policy. Its trust policy is restricted to
+this repository and the `production` environment, but least privilege has not
+been applied. See [iam-least-privilege.md](iam-least-privilege.md) for the
+verified inventory and the staged migration plan.
+
+## Release versions, image identity, and provenance
+
+The next release candidate is **`v1.1.0`**: the changes fix the blog route and
+add operational hardening without a breaking API or schema change. Do not
+automatically use `v2.0.0`. The existing `v1.0.0` Git tag is not moved; the
+deployed `v1` image is a legacy artifact whose exact source commit cannot be
+proven because it predates the OCI labels.
+
+- `imageTag` must be `vMAJOR.MINOR.PATCH` with an optional prerelease suffix.
+  The workflow rejects `v1`, `latest`, branch names, and commit SHAs before it
+  builds anything. A normal deployment also requires an annotated Git tag with
+  exactly that name on `GITHUB_SHA`; dispatch the workflow from the tagged
+  commit (normally `main` after the tag is pushed).
+- The ECR tag is immutable; the digest is the content identity. The workflow
+  records the digest and verifies the running ECS task's `imageDigest`.
+- The image carries `org.opencontainers.image.version` and
+  `org.opencontainers.image.revision`; the revision is `GITHUB_SHA`.
+- The ECR lifecycle policy retains ten tagged and ten untagged manifests. Do
+  not add a second SHA tag per release; it would consume the retention window.
+
+No `v1.1.0` tag or image has been created. See
+[release-readiness.md](release-readiness.md) for the exact release sequence.
+
 ## Subsequent deployments
 
 For an existing stack the workflow installs the dependencies, runs the
 application test suite (a failure stops the run before any image or AWS change),
 and then:
 
-1. reads `ApplicationUrl`, `CloudFrontDomainName`, and `CloudFrontDistributionId`
-   from the stack outputs and verifies that the distribution is `Deployed`,
-   serves this stack's ALB, redirects HTTP to HTTPS, uses `CachingDisabled`,
-   forwards all headers and cookies, allows the required methods, and is not
-   attached to a custom domain, then requests the HTTPS `/login` page through
-   CloudFront and requires the real UniBudget login form on a cache miss,
-   following redirects only on that hostname, before building or migrating;
-2. builds and pushes a new immutable tag (it refuses to overwrite an existing
-   tag);
-3. reads both task definitions and the exact role and secret ARNs from stack
+1. requires the `imageTag` input to be a semantic release version
+   (`vMAJOR.MINOR.PATCH`, optional prerelease), requires the same annotated
+   Git tag to point at `GITHUB_SHA`, and verifies the live ECR lifecycle policy
+   is release-safe (ten tagged, ten untagged, no `any` rule); a missing or
+   mismatched tag or an unsafe policy stops the run before any image is built
+   or pushed. The tag check runs on normal deployments, not the bootstrap run
+   that publishes no image;
+2. reads `ApplicationUrl`, `CloudFrontDomainName`, and
+   `CloudFrontDistributionId` from the stack outputs and verifies that the
+   distribution is `Deployed`, serves this stack's ALB, redirects HTTP to
+   HTTPS, uses `CachingDisabled`, forwards all headers and cookies, allows the
+   required methods, and is not attached to a custom domain, then requests the
+   HTTPS `/login` page through CloudFront and requires the real UniBudget login
+   form on a cache miss, following redirects only on that hostname, before
+   building or migrating;
+3. builds and pushes a new immutable tag (it refuses to overwrite an existing
+   tag), validates the returned `sha256:` digest, records it in the run output,
+   and writes the digest to the job summary;
+4. reads both task definitions and the exact role and secret ARNs from stack
    outputs;
-4. verifies the cluster and service are `ACTIVE`;
-5. verifies both task definitions' task role and execution role ARNs against
+5. verifies the cluster and service are `ACTIVE`;
+6. verifies both task definitions' task role and execution role ARNs against
    the stack outputs, the application container's exact environment variables
    and secret references, and the migration container command, `PGHOST`,
    `PGPORT`, `PGDATABASE`, `PGSSLMODE`, and exact secret names and ARNs;
-6. registers a one-off revision of the migration task definition whose only
+7. registers a one-off revision of the migration task definition whose only
    change is the image this run built, verifies that revision's
    `MigrationContainer` image, and runs it. It waits up to 30 minutes; if that
    expires it stops the task and waits up to two more minutes for ECS to report
@@ -624,12 +698,13 @@ and then:
    left registered for inspection. The ECS service is never scaled down or
    pointed at the temporary revision, and the rollout still uses `$IMAGE_TAG`
    from the same build;
-7. deploys the stack only after migration exit code `0`;
-8. waits for ECS service stability, verifies that the service is running the
-   image this workflow built, and checks `/api/health`, `/login`, and one real
-   `/blog/<slug>` entry from `src/content/blog` through the CloudFront HTTPS
-   URL. The blog check exists because health and login can be green while a
-   dynamic content route still fails.
+8. deploys the stack only after migration exit code `0`;
+9. waits for ECS service stability, verifies that the task definition references
+   the built image tag and that a running task reports the recorded image
+   digest, then checks `/api/health`, `/login`, one real `/blog/<slug>` entry
+   from `src/content/blog`, and an unknown blog slug through the CloudFront
+   HTTPS URL. The blog checks exist because health and login can be green while
+   a dynamic content route still fails or returns its not-found page as 200.
 
 The workflow requires an explicit `desiredCount` between `1` and `10`; it has
 no default and never silently scales the service to zero. A non-bootstrap run
@@ -918,15 +993,30 @@ after the restore point; communicate that data-loss window before proceeding.
 - **RDS:** decommissioning requires a verified snapshot, an explicit cost
   decision, and a plan for its security group.
 
+Rollback Drill 2 has **not been executed**. The isolated-account runbook,
+observation table, acceptance criteria, and evidence template are in
+[rollback-drill-2.md](rollback-drill-2.md). Do not use the production account
+to create an intentional outage.
+
 The ECR lifecycle policy in `hello-cdk/lib/cdk-stack.ts` keeps ten tagged
-images and ten untagged images. That rule is a proposal in the stack
-definition: it takes effect only after the stack is deployed, so until then
-the repository keeps whatever policy is live in ECR and the running `v1`
-image is not protected by the new rule yet. Applying it requires a
-lifecycle-policy preview first: the preview lists the digests that would expire and does not
-delete anything. A single rule with `tagStatus: any` is not equivalent,
-because one push contributes three images (the tagged index, the amd64
-manifest, and the BuildKit attestation) to that count.
+images and ten untagged images. The stack definition is not the live policy:
+on 2026-10-25 the repository still used one `tagStatus: any` rule with
+`countNumber: 5`, which counts the tagged index, the amd64 manifest, and the
+BuildKit attestation together. That policy is unsafe for the next push because
+two releases already produce six manifests.
+
+Apply the CDK policy **before** the next release image is pushed. The
+workflow now performs a read-only preflight and fails before the build if the
+live policy is still unsafe, so the unsafe push cannot proceed unnoticed. A
+production policy update is a separate approved infrastructure change (for
+example, a `cdk deploy` using the currently deployed `v1` image and the current
+desired count). Do not rely on the daily lifecycle evaluation to miss a newly
+pushed manifest.
+
+ECR can preview only the policy that is currently applied. It has no dry run
+for an unapplied policy, and a preview that lists zero expiring images today
+does not validate the proposed ten/ten rule. After applying the policy, run
+the preview again and confirm the tagged release history is retained.
 
 ## Costs and retained resources
 

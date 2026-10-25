@@ -18,10 +18,10 @@ Drill was performed while preparing this report.
 | # | Deliverable | Status |
 | --- | --- | --- |
 | 1 | Automated container CD (tests, Docker build, immutable ECR push, ECS rollout) | **Met** by reusing `.github/workflows/deploy.yml`; tests now run in that workflow |
-| 2 | Semantic versioning (`v2.0.0`) distinct from immutable image identity | **Partially met** — scheme and image provenance labels documented; `v1` is the deployed release; no semver-tagged image exists and `v1.0.0`/`v1` remain unreconciled |
+| 2 | Semantic versioning distinct from immutable image identity | **Partially met** — workflow now enforces semver tags and records digests; `v1.1.0` is the release candidate; no semver-tagged image exists yet and `v1.0.0`/`v1` remain unreconciled |
 | 3 | ECS application reachable through the load balancer, `/api/health` works | **Met for `v1`**, verified through CloudFront. Blog SSR fix is committed and validated locally; production stays broken until the next release |
-| 4 | CloudWatch observability: structured logs, Logs Insights, metrics and alarms | **Partially met** — logs and Logs Insights verified; four alarms and an error metric filter are now in CDK (not deployed, no notification action) |
-| 5 | Rollback Drill 2 | **Outstanding — not executed.** Plan and evidence template below; no timings claimed |
+| 4 | CloudWatch observability: structured logs, Logs Insights, metrics and alarms | **Partially met** — logs and Logs Insights verified; four alarms, an error metric filter, and optional SNS action support are in CDK (not deployed; no subscription) |
+| 5 | Rollback Drill 2 | **Outstanding — not executed.** Detailed runbook at [rollback-drill-2.md](rollback-drill-2.md); no timings claimed |
 | 6 | Outage lifecycle with a blameless post-mortem | **Met as documentation**; template included; no live exercise |
 | 7 | Release strategy comparison and the strategy actually used | **Met** — ECS rolling with circuit-breaker rollback |
 | 8 | Evidence mapping | This document |
@@ -101,11 +101,11 @@ service state and deployment status are the evidence used here.
 
 ### Scheme
 
-- A release is an annotated git tag `vMAJOR.MINOR.PATCH` (for example
-  `v2.0.0`).
+- A release is an annotated git tag `vMAJOR.MINOR.PATCH`; the next candidate
+  is `v1.1.0`.
 - The same string is passed to the workflow as `imageTag` and becomes the ECR
-  tag of the built image, e.g. `.../unibudget:v2.0.0`.
-- ECR tags are immutable, so `v2.0.0` can never be repointed at a different
+  tag of the built image, e.g. `.../unibudget:v1.1.0`.
+- ECR tags are immutable, so `v1.1.0` can never be repointed at a different
   image. The **digest** (`sha256:...`) is the content-addressed, immutable
   identity; the semver tag is the human-readable release label.
 - The **commit SHA** is recorded by the git tag and as the OCI label
@@ -125,25 +125,27 @@ service state and deployment status are the evidence used here.
 ### Worked example (documented, not executed)
 
 Deployed image tag: `v1` (verified in section 3). The git tag `v1.0.0` points
-at an earlier commit and does not correspond to that image. Next release
-example: `v2.0.0`, applied consistently to both the git tag and the image tag.
+at an earlier commit and does not correspond to that image. The next release
+candidate is **`v1.1.0`**, not `v2.0.0`: the changes fix the blog route and add
+backward-compatible operational hardening, with no breaking API or schema
+change. The workflow now rejects non-semver tags and, for a normal deployment,
+requires the annotated Git tag to point at the exact commit being built.
 
 ```bash
-git tag -a v2.0.0 -m "UniBudget v2.0.0"
-git push origin v2.0.0
+git tag -a v1.1.0 -m "UniBudget v1.1.0"
+git push origin v1.1.0
 # then dispatch Deploy with:
-#   imageTag=v2.0.0
+#   imageTag=v1.1.0
 #   desiredCount=<approved count>
 #   recoveryPlanVerified=true
 #   recoveryPointReference=<verified restore point>
 #   recoveryPointTimestamp=<UTC timestamp>
 ```
 
-The image becomes `...:v2.0.0` with a new digest; the tag and the commit
-together answer "which code is running". `v2.0.0` has **not** been released,
-and no `v2.0.0` image exists in ECR at the time of this report. Release
-contents (blog fix, alarms, provenance labels) still need a successful CI run
-and deployment first, so this remains a target, not a plan to tag immediately.
+The image becomes `...:v1.1.0` with a new digest; the tag and the commit
+together answer "which code is running". `v1.1.0` has **not** been released,
+and no `v1.1.0` image exists in ECR. Release contents still need a successful
+CI run, the ECR policy fix, and an approved deployment before tagging.
 
 ### ECR retention and the rollback window
 
@@ -170,7 +172,7 @@ Lifecycle policy preview of the live policy (started and read read-only):
 | Status | `COMPLETE` |
 | Expiring images | **0** |
 | Images in repository | 3 manifests: `v1` (`sha256:1a68b6ef…`, 120.7 MB), plus two untagged (same-size platform manifest and a 1.5 KB attestation) |
-| Last policy evaluation | 2026-10-25T01:14:52+01:00 |
+| Last policy evaluation | 2026-10-25T13:17:41+00:00 |
 
 The preview is empty today only because the repository holds fewer than five
 manifests. It does **not** validate the proposed policy: ECR has no dry-run
@@ -178,11 +180,13 @@ API for an unapplied policy. The proposed policy is safer and must be applied
 by a stack deployment (requires approval); it is not applied now.
 
 Ordering risk: the workflow builds and pushes the image **before** `cdk
-deploy`, so the next push still lands under the live `any`/5 rule. ECR
+deploy`, so the next push would still land under the live `any`/5 rule. ECR
 evaluates lifecycle policies about once a day, and the same workflow run
-replaces the policy shortly after the push, but that is a race. Apply the
-stack's lifecycle policy before the next release rather than relying on the
-daily evaluation to miss the new manifests.
+replaces the policy shortly after the push, but that is a race. The workflow
+now performs a read-only policy assessment before the build and fails if the
+live policy is not ten-tagged/ten-untagged with no `any` rule. Apply the
+stack's lifecycle policy before the next release; do not rely on the daily
+evaluation to miss the new manifests.
 
 ## 3. ECS application availability
 
@@ -287,10 +291,11 @@ CloudWatch. This is a gap in evidence, not a claim that logging is broken.
 ### Alarms
 
 **Implemented in CDK, not deployed.** `hello-cdk/lib/cdk-stack.ts` now defines
-four alarms plus one JSON metric filter. The live account still has none until
-the next stack deployment, and an alarm with no action pages nobody: this stack
-deliberately does not create an SNS topic or an unconfirmed email subscription,
-so an operator must attach an existing topic (`alarmActions`) after approval.
+four alarms plus one JSON metric filter. It can attach an existing,
+operator-managed SNS topic through `alarmTopicArn`/`ALARM_TOPIC_ARN`; it never
+creates a topic or invents a subscription. The live account still has no
+alarms or topic, so detection remains manual until an approved deployment and
+subscription are completed.
 
 | Alarm | Metric | Threshold / evaluation | Rationale |
 | --- | --- | --- | --- |
@@ -308,8 +313,9 @@ intentional zero does not alarm.
 
 Synthesis and tests: `npx cdk synth` produces the four
 `AWS::CloudWatch::Alarm` resources and the metric filter; the CDK suite passes
-18/18, including threshold, dimension, filter-pattern, and "no SNS action"
-assertions. Not observed in CloudWatch, because nothing was deployed.
+20/20, including threshold, dimension, filter-pattern, no-action, and
+configured-topic assertions. Not observed in CloudWatch, because nothing was
+deployed.
 
 Thresholds are intentionally low for a single-task service. A p95 latency
 alarm (`TargetResponseTime > 2 s` for 3 periods) and a `HealthyHostCount < 1`
@@ -320,7 +326,9 @@ baseline yet.
 ## 5. Rollback Drill 2 — NOT EXECUTED
 
 No drill was run. Nothing below is a result; it is the procedure and the
-evidence template to fill in when it is approved and executed.
+evidence template to fill in when it is approved and executed. The detailed,
+canonical runbook and evidence table are in
+[rollback-drill-2.md](rollback-drill-2.md).
 
 ### Prerequisite: an isolated environment (not yet provisioned)
 
@@ -489,9 +497,9 @@ the circuit breaker performs the rollback automatically.
 | Deliverable | Implementation | Verification | Status |
 | --- | --- | --- | --- |
 | Container CD | `.github/workflows/deploy.yml`, `Dockerfile`, ECR repository, ECS service | Tests step added; CI suite; running `v1`; deployment `COMPLETED` | Met (manual dispatch by design) |
-| Semver | Release procedure above; immutable ECR tags; OCI version/revision labels | `v1` tag + digest observed; `v2.0.0` not released; provenance labels added but not in any image | Partial |
-| Availability | CloudFront → ALB → `/api/health`; target group probe; post-deploy content-route check | 200 `{"status":"ok"}`; `/login` 200; service 1/1; blog fix 5/5 locally | Met for `v1`; blog route still broken until release |
-| Observability | `/unibudget/ecs/application`, JSON error logs, four alarms + metric filter in CDK | Logs Insights executed (10 rows; 0 structured errors); CDK synth + 18/18 tests; live `describe-alarms` empty until deploy | Partial (alarms not deployed, no actions) |
+| Semver | Semver workflow gate; immutable ECR tags; OCI version/revision labels; digest capture | `v1` tag + digest observed; `v1.1.0` candidate not released; provenance labels not in any image yet | Partial |
+| Availability | CloudFront → ALB → `/api/health`; target group probe; post-deploy blog 200 and unknown-slug 404 checks | Production `/api/health` 200, `/login` 200, `/blog/first-post` **500**; local 200/404; service 1/1 | Met for `v1`; blog route still broken until release |
+| Observability | `/unibudget/ecs/application`, JSON error logs, four alarms + metric filter + optional SNS action | Logs Insights executed (10 rows; 0 structured errors); CDK synth + 20/20 tests; live `describe-alarms` empty until deploy | Partial (alarms not deployed, no subscription) |
 | Rollback Drill 2 | Circuit breaker + procedure above | **Not executed** | Outstanding |
 | Outage lifecycle | Detection/triage/mitigation/post-mortem above | Documentation only | Met as documentation |
 | Release strategies | Rolling + circuit breaker in CDK | CDK synthesis tests; service config | Met |
@@ -499,26 +507,25 @@ the circuit breaker performs the rollback automatically.
 
 ### Remaining actions before claiming the full checklist
 
-1. Execute Rollback Drill 2 in a separate drill account and record timings.
-2. Deploy the CDK change that adds the four alarms, then attach an approved
-   SNS topic action and confirm a test notification. Until then, detection is
-   manual even though the definitions exist.
+1. Execute Rollback Drill 2 in a separate drill account and record timings
+   using [rollback-drill-2.md](rollback-drill-2.md).
+2. Deploy the CDK change that adds the four alarms, create and confirm an SNS
+   subscription, grant `cloudwatch.amazonaws.com` publish permission in the
+   topic policy, set `ALARM_TOPIC_ARN`, and confirm a test notification. Until
+   then, detection is manual even though the definitions exist. See
+   [alarms.md](alarms.md).
 3. Deploy an image containing the blog SSR fix and verify `/blog/<slug>`
-   returns 200 in production; the new post-deploy check must pass on that run.
-4. Decide how to reconcile `v1.0.0`/`v1` without rewriting the published tag,
-   then release a semver tag (for example `v2.0.0`) and verify its OCI
-   `version` and `revision` labels map to the digest and commit. Do not create
-   `v2.0.0` until the release contents above are ready.
-5. Apply the ECR lifecycle policy in CDK when approved, before the next
-   release. The live `any`/5 rule will start expiring manifests after the next
-   push; the preview today is empty only because the repository has three
-   manifests.
-6. Produce one real structured-error log entry in CloudWatch, or add a
+   returns 200 and an unknown slug returns 404 in production; the new
+   post-deploy checks must pass on that run.
+4. Apply the ECR lifecycle policy before the next push, then release
+   `v1.1.0` (not `v2.0.0`) and verify its OCI `version` and `revision` labels
+   map to the digest and commit. Do not move `v1.0.0`.
+5. Produce one real structured-error log entry in CloudWatch, or add a
    synthetic health check that exercises the error path, to evidence the JSON
    schema in the log group.
-7. Before deploying the new resources, confirm the deploy role
-   (`AWS_DEPLOY_ROLE_ARN`) and the CDK bootstrap execution role can create and
-   update `AWS::CloudWatch::Alarm`, `AWS::Logs::MetricFilter`, and the ECR
-   lifecycle policy. This was **not verified**: the role ARN is a repository
-   secret and was not assumed, and no `cdk diff` was run against the account.
-   Run that diff under the deploy role before the next dispatch.
+6. Replace the verified `AdministratorAccess` attachment on
+   `unibudget-github-deploy` with the staged least-privilege policy in
+   [iam-least-privilege.md](iam-least-privilege.md), after a non-production
+   deployment proves it.
+7. Push the hardening branch, verify CI, and merge it before dispatching the
+   release. No new branch has been CI-verified yet.
