@@ -123,7 +123,22 @@ export const onRequest = defineMiddleware((context, next) => {
       });
       return withRequestId(response, requestId);
     } catch (error) {
+      // One error record for the failure and one access record for the
+      // response, sharing the request id. Returning the response instead of
+      // rethrowing keeps the failure safe and correlatable: the framework's
+      // error path is free to render a stack trace, and a thrown error would
+      // also leave the caller without the X-Request-Id header.
       logServerError('middleware.request.failed', error);
+      const response = new Response(
+        'Something went wrong. Please try again later.',
+        {
+          status: 500,
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'no-store',
+          },
+        },
+      );
       logRequest({
         requestId,
         method,
@@ -131,7 +146,7 @@ export const onRequest = defineMiddleware((context, next) => {
         status: 500,
         durationMs: performance.now() - startedAt,
       });
-      throw error;
+      return withRequestId(response, requestId);
     }
   });
 });

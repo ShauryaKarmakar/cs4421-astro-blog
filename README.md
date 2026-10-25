@@ -114,6 +114,8 @@ deliberately.
 
 - [Release readiness and deployment gate](./docs/release-readiness.md)
 - [CloudWatch alarms and operator triage](./docs/alarms.md)
+- [Log analysis and incident correlation](./docs/logging.md)
+- [Chaos drill response playbook](./docs/chaos-drill.md)
 - [CloudFront minimum-TLS proposal](./docs/cloudfront-tls-plan.md)
 - [Architecture decision records](./docs/adr/README.md)
 - [IAM least-privilege assessment](./docs/iam-least-privilege.md)

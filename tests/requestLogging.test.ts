@@ -194,6 +194,24 @@ describe('structured request logging', () => {
     expect(record.level).toBe('info');
   });
 
+  it('does not treat expected 401, 403 or 404 responses as server crashes', async () => {
+    await onRequest(context('/api/auth/me'), nextReturning(401));
+    await onRequest(context('/api/transactions'), nextReturning(403));
+    await onRequest(context('/blog/not-a-real-post'), nextReturning(404));
+
+    const access = parseRecords(stdout);
+    expect(access.map((record) => [record.path, record.status, record.level])).toEqual([
+      ['/api/auth/me', 401, 'warn'],
+      ['/api/transactions', 403, 'warn'],
+      ['/blog/not-a-real-post', 404, 'warn'],
+    ]);
+    // No exception record, so StructuredErrorCount is not incremented.
+    expect(parseRecords(stderr)).toEqual([]);
+    for (const record of access) {
+      expect(record.level).not.toBe('error');
+    }
+  });
+
   it('never logs the query string, cookies, session data or request bodies', async () => {
     await onRequest(
       context('/blog/first-post?token=super-secret&email=person%40example.test', {
@@ -225,21 +243,29 @@ describe('structured request logging', () => {
     expect(record.status).toBe(404);
   });
 
-  it('records an unhandled handler failure as an error and a 500 access record', async () => {
+  it('records an unhandled handler failure once and returns a correlated, safe 500', async () => {
     const next = vi.fn(async () => {
       throw new Error('render failed for /blog/first-post');
     });
 
-    await expect(onRequest(context('/blog/first-post'), next as never)).rejects.toThrow(
-      'render failed',
-    );
+    const response = await onRequest(context('/blog/first-post'), next as never);
+    const body = await response.text();
 
     const errors = parseRecords(stderr);
     const access = parseRecords(stdout);
+    expect(response.status).toBe(500);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    // The caller can quote the id from the response when reporting the failure.
+    expect(response.headers.get('X-Request-Id')).toBe(access[0].requestId);
+    expect(errors).toHaveLength(1);
+    expect(access).toHaveLength(1);
     expect(errors[0].event).toBe('middleware.request.failed');
+    expect(errors[0].level).toBe('error');
     expect(errors[0].requestId).toBe(access[0].requestId);
     expect(access[0].status).toBe(500);
     expect(access[0].level).toBe('warn');
+    expect(body).not.toContain('render failed for');
+    expect(body).not.toContain('at ');
     expect(`${stdout.join('')}${stderr.join('')}`).not.toContain('render failed for');
   });
 });
