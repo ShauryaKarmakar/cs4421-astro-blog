@@ -449,6 +449,14 @@ describe('repository hygiene contracts', () => {
     expect(stepBlock('Run Tests')).toContain('npm test -- --run');
   });
 
+  it('provides the PostgreSQL service the deployment test suite requires', () => {
+    // The integration suites fail closed without these; without the service the
+    // release stops at the test gate instead of silently skipping coverage.
+    expect(workflow).toContain('image: postgres:16');
+    expect(workflow).toContain('BUDGET_TEST_DATABASE_URL: postgresql://');
+    expect(workflow).toContain('MIGRATION_TEST_DATABASE_URL: postgresql://');
+  });
+
   it('gates the rollout on the migration and reuses the same image tag', () => {
     const build = stepBlock('Build and Push Application Image');
     expect(build).toContain('image_uri="$REPOSITORY_URI:$IMAGE_TAG"');
