@@ -1,12 +1,32 @@
 # Rollback Drill 2 — isolated runbook
 
 Status: **not executed**. No timings, pass/fail result, or production recovery
-claim exists.
+claim exists. Runbook revised 2026-10-26 for reproducibility; the status is
+unchanged.
 
 The production account must not be used to create an intentional outage. The
 stack uses fixed resource names (`UniBudgetStack`, `/unibudget/ecs/application`,
 `unibudget/supabase/*`), so a second stack in the same account is not a valid
 isolated environment.
+
+## 0. What this drill must prove
+
+1. A task that fails its liveness check is detected by ECS without an operator
+   touching the service.
+2. The deployment circuit breaker stops the failed rollout and restores the
+   last `COMPLETED` task definition automatically.
+3. The restored service serves the baseline image digest, not the drill image.
+4. `/api/health`, `/login`, a real `/blog/<slug>` and an unknown slug return
+   their expected statuses after recovery.
+5. Recovery time and traffic errors during the window are recorded in UTC.
+
+It must also show that the release workflow's post-deploy gate would reject a
+rollback that silently left the old task set running: the gate requires the
+primary deployment to be `COMPLETED` and the running task digest to match the
+image this run published.
+
+This drill is **not** a database recovery exercise, a blue/green switch, or a
+validation of a production change. It runs only in the isolated account below.
 
 ## 1. Environment isolation
 
@@ -50,6 +70,61 @@ The runbook is ready, but the drill cannot start until the first five rows have
 evidence. Do not substitute the production account or production database for
 any row.
 
+### Permissions required in the drill account
+
+| Capability | Needed for |
+| --- | --- |
+| `ecr:*` on the drill repository | Push the drill-only image |
+| `ecs:RegisterTaskDefinition`, `ecs:UpdateService`, `ecs:Describe*` | Deploy the drill image and read deployment state |
+| `iam:PassRole` for the drill task/execution roles | Start the drill task |
+| `cloudwatch:DescribeAlarms`, `cloudwatch:GetMetricData`, `logs:FilterLogEvents` | Observe failure and recovery |
+| `cloudformation:DescribeStacks`, `cloudfront:GetDistribution` | Record stack and edge state |
+
+No permission is required in the production account.
+
+## 2a. Exact rollback path under test
+
+The architecture is a single ECS service with the rolling deployment controller
+and `circuitBreaker: { rollback: true }` (ADR 0006). There is no traffic switch.
+The automatic path is:
+
+1. The new task fails its container health check or the ALB readiness check.
+2. ECS stops replacing healthy tasks and the deployment enters a failed state.
+3. The circuit breaker rolls the service back to the last `COMPLETED` task
+   definition revision.
+4. `rolloutState` returns to `COMPLETED` on the baseline revision.
+
+The manual equivalent, only if the automatic path does not fire in the drill
+account, is to point the service back at the baseline revision:
+
+```bash
+# Drill account only. Never run this against the production service.
+aws ecs update-service \
+  --cluster "$DRILL_CLUSTER" \
+  --service "$DRILL_SERVICE" \
+  --task-definition "$BASELINE_TASK_DEFINITION"
+aws ecs wait services-stable \
+  --cluster "$DRILL_CLUSTER" \
+  --services "$DRILL_SERVICE"
+```
+
+Record which path actually recovered the service. A manual recovery still
+satisfies the availability criteria but fails criterion 2 (automatic rollback)
+and must be reported as such.
+
+Baseline capture commands (read-only):
+
+```bash
+aws ecs describe-services --cluster "$DRILL_CLUSTER" --services "$DRILL_SERVICE" \
+  --query 'services[0].{taskDefinition:taskDefinition,rollout:deployments[0].rolloutState,desired:desiredCount,running:runningCount}' \
+  --output json > baseline-service.json
+aws ecs describe-task-definition --task-definition "$BASELINE_TASK_DEFINITION" \
+  --query 'taskDefinition.containerDefinitions[0].image' --output text
+```
+
+Store the JSON evidence with the drill record; do not store credentials or
+secret values.
+
 ## 3. Controlled failure
 
 Build a drill-only image that fails its container health check, for example a
@@ -90,6 +165,11 @@ readiness endpoint succeeds.
 
 If any row is blank, the drill is not complete. Do not infer timings from
 CloudWatch retention or reconstruct them later.
+
+The rollback-detection logic is covered by workflow contract tests in
+`tests/deployWorkflow.test.ts` (primary rollout must be `COMPLETED`, running
+digest must match the published image). Those tests protect the gate from
+silently disappearing; they are not evidence that a real rollback occurred.
 
 ## 6. Cleanup and cost
 

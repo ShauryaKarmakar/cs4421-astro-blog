@@ -124,7 +124,7 @@ Database recovery (last resort, forward-only migrations):
 | ECR retains the rollback image | **Verified** | tag `v1` present; policy retains 10 tagged images |
 | Deployment state inspectable | **Verified** | `describe-services`, `describe-tasks`, CloudWatch alarm history |
 | Rollback actually exercised | **Not proven** | Rollback Drill 2 is prepared but has never run; no isolated drill account |
-| Supabase recovery point available | **Verified for `v1.1.3`, manual** | Logical dump in S3 with a recorded SHA-256, restored into a disposable PostgreSQL 17 container with 0 errors and matching row counts ([release-readiness.md](release-readiness.md)). Supabase is on the Free Plan, so there are no managed backups or point-in-time recovery; a fresh dump is required before each migration |
+| Supabase recovery point available | **Verified for `v1.1.3`, manual** | Logical dump in S3 with a recorded SHA-256, restored into a disposable PostgreSQL 17 container with 0 errors and matching row counts ([release-readiness.md](release-readiness.md); procedure in [backup-and-recovery.md](backup-and-recovery.md)). Supabase is on the Free Plan, so there are no managed backups or point-in-time recovery; a fresh dump is required before each migration |
 | RDS legacy PITR usable for the app | **Not applicable** | The retained RDS instance is not the production database; its 1-day PITR window does not cover Supabase |
 | Migration rollback scripts | **Not available** | Migrations are forward-only by design |
 
@@ -161,17 +161,24 @@ production change, not part of this preparation.
 
 ## What is not proven
 
-- No real threshold crossing has been observed. The only alarm-state evidence
-  is a manual `StructuredErrors` `ALARM`→`OK` test on 2026-10-25, which proves
-  CloudWatch executed the SNS action but not metric evaluation.
-- Inbox receipt of an alarm email has not been independently verified.
+- No real threshold crossing has been observed. The alarm-state evidence is a
+  manual `ALARM`→`OK` test on 2026-10-25 and a second controlled publish on
+  2026-10-26, which prove CloudWatch executed the SNS action but not metric
+  evaluation. SNS reported one delivered and zero failed notifications on
+  2026-10-26.
+- Inbox receipt of an alarm email has not been independently verified. Delivery
+  metrics are not mailbox evidence.
 - Circuit-breaker rollback, task replacement during a liveness failure, and
   database restore have not been exercised.
 - A short 500 burst may not trip `Target5xx` or `StructuredErrors`: both need
   two consecutive 5-minute periods above five events. During a drill, use the
   access records for immediate detection and treat the alarm as the slower
   notification path.
-- The `500`-response correlation improvement in this branch is not part of
-  the running `v1.1.3` image. The deployed middleware source rethrows unhandled
-  errors into the framework's error path, and that path has not been observed
-  in production, so the presence of `X-Request-Id` on a live 500 is unverified.
+- The `500`-response correlation improvement is not part of the running
+  `v1.1.3` image. The deployed middleware source rethrows unhandled errors into
+  the framework's error path, and that path has not been observed in
+  production, so the presence of `X-Request-Id` on a live 500 is unverified.
+- A deployment gate added on 2026-10-26 asserts a well-formed `X-Request-Id` on
+  the `/login` response before a release is accepted. It is tested in the
+  repository but has not shipped in a release, so it is not production
+  evidence.

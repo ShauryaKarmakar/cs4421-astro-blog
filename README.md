@@ -120,11 +120,13 @@ deliberately.
 - [Architecture decision records](./docs/adr/README.md)
 - [IAM least-privilege assessment](./docs/iam-least-privilege.md)
 - [Rollback Drill 2 runbook](./docs/rollback-drill-2.md)
+- [Backup and recovery runbook](./docs/backup-and-recovery.md)
 - [Week 7 deliverables and evidence](./docs/week7-deliverables.md)
 
-The current production image is `v1`, which predates the blog SSR fix; verify
-`/blog/<slug>` after the next approved release. The ECR lifecycle policy is now
-release-safe, and the SNS topic and email subscription are confirmed.
+The current production image is `v1.1.3`, which includes the blog SSR fix and
+request correlation; the next release also gains the deployment gate that fails
+the run when `X-Request-Id` is missing from `/login`. The ECR lifecycle policy
+is now release-safe, and the SNS topic and email subscription are confirmed.
 
 The four alarms and the metric filter are deployed in the separate
 `UniBudgetStack-Monitoring` stack, which imports the existing log group and SNS

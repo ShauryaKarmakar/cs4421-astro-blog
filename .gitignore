@@ -39,6 +39,11 @@ pnpm-debug.log*
 /scripts/check-db-tables.mjs
 /scripts/test-db-connection.mjs
 
+# Database dumps and recovery points must never be committed
+*.dump
+*.dump.gz
+/backups/
+
 # Local review artifacts, smoke-test certificates/keys, and imported chat context
 /artifacts/
 /.cloud-attachments/

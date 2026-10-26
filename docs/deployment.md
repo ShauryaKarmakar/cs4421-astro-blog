@@ -722,7 +722,11 @@ and then:
    digest, then checks `/api/health`, `/login`, one real `/blog/<slug>` entry
    from `src/content/blog`, and an unknown blog slug through the CloudFront
    HTTPS URL. The blog checks exist because health and login can be green while
-   a dynamic content route still fails or returns its not-found page as 200.
+   a dynamic content route still fails or returns its not-found page as 200;
+10. verifies that the `/login` response carries a well-formed `X-Request-Id`
+   header, so a release cannot ship without request correlation. The header is
+   a correlation mechanism, not proof of success: the status checks above stay
+   in force independently.
 
 The workflow requires an explicit `desiredCount` between `1` and `10`; it has
 no default and never silently scales the service to zero. A non-bootstrap run
@@ -988,6 +992,9 @@ Before adopting existing data or running the first production migration:
 Recovery is a restore of the whole database, not a reverse SQL script. A
 restore also rolls back the migration ledger and any application data written
 after the restore point; communicate that data-loss window before proceeding.
+The storage layout, restore procedure, post-restore checks, approvals and the
+open RPO/RTO decision are in
+[backup-and-recovery.md](backup-and-recovery.md).
 
 ## Rollback and its limits
 

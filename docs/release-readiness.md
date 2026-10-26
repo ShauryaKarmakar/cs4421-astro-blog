@@ -1,6 +1,6 @@
 # UniBudget release readiness
 
-Last updated: 2026-10-25
+Last updated: 2026-10-26
 
 This document separates what is implemented from what is tested, merged,
 deployed, and verified in production. A green local suite is not a deployment.
@@ -9,7 +9,8 @@ deployed, and verified in production. A green local suite is not a deployment.
 
 | Item | State |
 | --- | --- |
-| `main` | `c9eb373` — merge of PR #46 (CloudFront origin gate) |
+| `main` (current) | `d22cce4` — static-deploy test database fix; no release since `v1.1.3` |
+| Release commit | `c9eb373` — merge of PR #46 (CloudFront origin gate) |
 | Release tag | annotated `v1.1.3` on `c9eb373` |
 | Release run | [Deploy 40226648129](https://github.com/ShauryaKarmakar/cs4421-astro-blog/actions/runs/40226648129) — **success** |
 | Merge-commit CI | [CI 40226500423](https://github.com/ShauryaKarmakar/cs4421-astro-blog/actions/runs/40226500423) — **success** |
@@ -79,6 +80,13 @@ This is a logical backup, not a Supabase-managed PITR point. It records the
 schema and data at the timestamp above; it does not provide continuous
 recovery. Recovering to a later point still requires a new manual dump.
 
+The backup bucket was re-checked read-only on 2026-10-26: SSE-S3 (`AES256`),
+versioning enabled, all public access blocked, and a 90-day expiry rule. The
+full procedure, restore checks and approval requirements are in
+[backup-and-recovery.md](backup-and-recovery.md). The Supabase plan itself was
+not re-verified; treat the Free Plan statement as a 2026-10-25 record until it
+is confirmed in the dashboard.
+
 ## Readiness matrix
 
 | Area | Implemented | CI verified | Deployed | Verified in production |
@@ -91,7 +99,8 @@ recovery. Recovering to a later point still requires a new manual dump.
 | Semantic and annotated tag enforcement | yes | yes | yes | `v1.1.3` on `c9eb373` |
 | ECR retention preflight | yes | yes | applied out-of-band | preflight passed; four manifests retained |
 | CloudWatch alarms + metric filter | yes | yes | **yes, separate stack** | four alarms present, all `OK` |
-| SNS notification action | yes | CDK tests | **yes** | alarm history records a successful action; inbox receipt not independently verified |
+| SNS notification action | yes | CDK tests | **yes** | alarm history records a successful action; SNS reported one delivered and zero failed notifications for the 2026-10-26 test publish; inbox receipt still not independently verified |
+| Request correlation release gate | yes | yes (workflow contract + shell execution tests) | **no** — ships with the next release | `X-Request-Id` observed on the live `/login` response, 2026-10-26; the deployment gate itself has not run against production |
 | Least-privilege deploy role | proposal only | no | no | role still has `AdministratorAccess` |
 | CloudFront modern TLS | proposal only | no | no | minimum viewer TLS is `TLSv1` |
 | Rollback Drill 2 | runbook only | no | no | not executed |
@@ -112,12 +121,21 @@ recovery. Recovering to a later point still requires a new manual dump.
    task-definition, and IAM changes.
 5. **SNS inbox receipt is not independently proven, and no real threshold
    crossing has occurred.** Alarm history proves CloudWatch executed the
-   publish action.
+   publish action, and SNS reported one successful delivery for the controlled
+   2026-10-26 publish; neither proves the message reached the mailbox rather
+   than spam or quarantine.
 6. **Rollback Drill 2 has not been executed.** The rollback path is documented
-   but not drilled.
+   and its workflow contracts are tested, but no drill has observed a real
+   circuit-breaker rollback. See [rollback-drill-2.md](rollback-drill-2.md).
 7. **Supabase has no managed backup or PITR on the Free Plan.** A manual dump
    and restore proof are required before each migration until the project is
-   upgraded or a managed backup strategy is adopted.
+   upgraded or a managed backup strategy is adopted. Provider documentation
+   checked 2026-10-26 confirms free-tier projects receive neither daily backups
+   nor PITR; the live plan itself was not re-checked. See
+   [backup-and-recovery.md](backup-and-recovery.md).
+8. **The request-correlation gate is implemented but unreleased.** The current
+   production image predates it, so a future release is the first run that can
+   fail the deployment on a missing or malformed `X-Request-Id` header.
 
 ## Rollback
 
