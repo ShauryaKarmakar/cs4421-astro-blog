@@ -25,6 +25,8 @@ describe('scheduled database backup workflow', () => {
   });
 
   it('uses OIDC and no long-lived AWS credentials', () => {
+    // The deploy role only trusts the production environment subject.
+    expect(workflow).toContain('    environment: production\n');
     expect(workflow).toContain('id-token: write');
     expect(workflow).toContain('contents: read');
     expect(workflow).toContain('aws-actions/configure-aws-credentials@v4');

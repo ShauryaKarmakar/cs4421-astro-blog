@@ -34,6 +34,10 @@ env:
 jobs:
   backup:
     runs-on: ubuntu-latest
+    # The deploy role's trust policy only accepts the OIDC subject for the
+    # production environment, so the job has to run inside that environment to
+    # assume it. It therefore inherits the environment's protection rules.
+    environment: production
     timeout-minutes: 30
     if: github.event_name == 'workflow_dispatch' || vars.BACKUP_ENABLED == 'true'
 

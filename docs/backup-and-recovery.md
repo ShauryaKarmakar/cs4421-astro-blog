@@ -109,6 +109,14 @@ dumping, rejects an archive `pg_restore` cannot list, compares the uploaded
 object's SHA-256 with the local dump, and never prints the connection string.
 It fails closed when the secret is absent.
 
+The job runs in the `production` GitHub environment because the deploy role's
+trust policy only accepts that OIDC subject. It therefore inherits the
+environment's protection rules: if required reviewers are configured, a
+scheduled run waits for approval instead of backing up unattended. Either
+approve scheduled runs promptly or give backups their own role trusted for the
+default branch. The role also still carries `AdministratorAccess`; the backup
+needs only read/write access to this bucket.
+
 Status: **implemented, not yet enabled**. No secret or `BACKUP_ENABLED`
 variable is configured, so no scheduled backup has run. After enabling it,
 confirm the first run produced both objects, then record the date and cadence
