@@ -58,11 +58,29 @@ describe('scheduled database backup workflow', () => {
     expect(workflow).toContain('exit 1');
   });
 
-  it('keeps the connection string out of arguments and the log', () => {
-    expect(workflow).toContain('export PGDATABASE="$BACKUP_DATABASE_URL"');
-    expect(workflow).toContain('-e PGDATABASE');
+  it('splits the connection secret into environment fields', () => {
+    expect(workflow).toContain('process.env.BACKUP_DATABASE_URL');
+    expect(workflow).toContain('export PGHOST="$(cat "$params/host")"');
+    expect(workflow).toContain('export PGPASSWORD="$(cat "$params/password")"');
+    expect(workflow).toContain('-e PGPASSWORD');
+    // libpq expands a URI only when it arrives as an explicit dbname. Setting
+    // PGDATABASE to the URI silently connects to a local socket instead.
+    expect(workflow).not.toContain('export PGDATABASE="$BACKUP_DATABASE_URL"');
     expect(workflow).not.toContain('echo "$BACKUP_DATABASE_URL"');
     expect(workflow).not.toContain('--dbname="$BACKUP_DATABASE_URL"');
+  });
+
+  it('verifies the pooler certificate with the Supabase CA', () => {
+    expect(workflow).toContain('BACKUP_CA_SECRET: unibudget/supabase/ca');
+    expect(workflow).toContain('aws secretsmanager get-secret-value');
+    expect(workflow).toContain('export PGSSLMODE=verify-full');
+    expect(workflow).toContain('-e PGSSLROOTCERT=/ca.pem');
+    expect(workflow).toContain('-v "$work/ca.pem:/ca.pem:ro"');
+  });
+
+  it('removes credential files when the step ends, even on failure', () => {
+    expect(workflow).toContain('trap cleanup EXIT');
+    expect(workflow).toContain('rm -rf "$params" "$work/ca.pem"');
   });
 
   it('writes a listable custom-format dump with a manifest', () => {

@@ -103,11 +103,20 @@ manifest under the project prefix above.
 | `AWS_DEPLOY_ROLE_ARN` | variable | Existing deploy role, assumed with OIDC |
 | `BACKUP_ENABLED` | variable | Set to `true` to let the schedule run; manual dispatch works without it |
 | `AWS_REGION` | variable (optional) | Defaults to `us-east-1` |
+| `unibudget/supabase/ca` | AWS secret (hard-coded) | CA used to verify the pooler certificate over `verify-full` |
 
 The job validates the account, bucket encryption and bucket versioning before
 dumping, rejects an archive `pg_restore` cannot list, compares the uploaded
 object's SHA-256 with the local dump, and never prints the connection string.
 It fails closed when the secret is absent.
+
+The URL is split into libpq fields in the runner and passed to `pg_dump`
+through the environment: a URI supplied through `PGDATABASE` is not expanded by
+libpq and silently falls back to a local socket. TLS is `verify-full`; the
+runner reads the Supabase CA from `unibudget/supabase/ca` in the deployment
+account, mounts it read-only for the dump, and deletes the CA and credential
+files when the step ends. Only a plain `postgresql://` URL with a host, user,
+password and database is accepted.
 
 The job runs in the `production` GitHub environment because the deploy role's
 trust policy only accepts that OIDC subject. It therefore inherits the

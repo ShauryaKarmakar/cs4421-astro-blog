@@ -31,6 +31,10 @@ env:
   BACKUP_BUCKET: unibudget-db-backups-556890483680-us-east-1
   SUPABASE_PROJECT_REF: fkrtduyzpwfrbhooxvpr
 
+  # The pooler certificate chains to the Supabase private CA. The postgres
+  # image does not ship it, so the job reads it from the deployment account.
+  BACKUP_CA_SECRET: unibudget/supabase/ca
+
 jobs:
   backup:
     runs-on: ubuntu-latest
@@ -102,14 +106,57 @@ jobs:
           prefix="supabase/${SUPABASE_PROJECT_REF}/${timestamp}"
           dump_name="unibudget-${timestamp}.dump"
           work="$RUNNER_TEMP/backup"
-          mkdir -p "$work"
+          params="$work/params"
+          mkdir -p "$work" "$params"
+          chmod 700 "$work" "$params"
 
-          # PGDATABASE carries the connection string into the container through
-          # the environment, so the URL never appears in docker arguments or in
-          # the job log.
-          export PGDATABASE="$BACKUP_DATABASE_URL"
+          # Credential files exist only for the duration of this step.
+          cleanup() {
+            rm -rf "$params" "$work/ca.pem"
+          }
+          trap cleanup EXIT
+
+          # libpq expands a connection URI only when it arrives as an explicit
+          # dbname, so split the secret into the fields the client reads from
+          # the environment. No value is echoed, and the URL never becomes a
+          # command-line argument.
+          node - "$params" <<'NODE'
+          const fs = require('node:fs');
+          const dir = process.argv[2];
+          const raw = process.env.BACKUP_DATABASE_URL;
+          if (!raw) throw new Error('BACKUP_DATABASE_URL is not set.');
+          const url = new URL(raw);
+          if (!/^postgres(ql)?:$/.test(url.protocol)) {
+            throw new Error('BACKUP_DATABASE_URL must be a postgresql:// connection string.');
+          }
+          const fields = {
+            host: url.hostname,
+            port: url.port || '5432',
+            user: decodeURIComponent(url.username),
+            password: decodeURIComponent(url.password),
+            database: decodeURIComponent(url.pathname.replace(/^\//, '')),
+          };
+          for (const [name, value] of Object.entries(fields)) {
+            if (!value) throw new Error(`BACKUP_DATABASE_URL is missing its ${name}.`);
+            fs.writeFileSync(`${dir}/${name}`, value, { mode: 0o600 });
+          }
+          NODE
+
+          export PGHOST="$(cat "$params/host")"
+          export PGPORT="$(cat "$params/port")"
+          export PGUSER="$(cat "$params/user")"
+          export PGPASSWORD="$(cat "$params/password")"
+          export PGDATABASE="$(cat "$params/database")"
+          export PGSSLMODE=verify-full
+
+          aws secretsmanager get-secret-value \
+            --secret-id "$BACKUP_CA_SECRET" \
+            --query SecretString --output text > "$work/ca.pem"
+
           docker run --rm \
-            -e PGDATABASE \
+            -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE \
+            -e PGSSLMODE -e PGSSLROOTCERT=/ca.pem \
+            -v "$work/ca.pem:/ca.pem:ro" \
             -v "$work:/backup" \
             postgres:17 \
             pg_dump --format=custom --no-owner --no-privileges \
