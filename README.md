@@ -123,9 +123,15 @@ deliberately.
 - [Rollback Drill 2 runbook](./docs/rollback-drill-2.md)
 - [Week 7 deliverables and evidence](./docs/week7-deliverables.md)
 
-The current production image is `v1`, which predates the blog SSR fix; verify
-`/blog/<slug>` after the next approved release. The ECR lifecycle policy is now
+Production runs image `v1.1.3` (task definition revision 4). On 2026-10-26
+`/api/health` and `/login` returned 200, `/blog/first-post` returned 200, and an
+unknown slug returned 404 through CloudFront. The ECR lifecycle policy is
 release-safe, and the SNS topic and email subscription are confirmed.
+
+Rollback Drill 2 was executed twice on 2026-10-26 in an isolated account; the
+second run rolled back automatically on the `Request5xx` deployment alarm. That
+alarm is not deployed to production yet — see
+[rollback-drill-2.md](./docs/rollback-drill-2.md).
 
 The four alarms and the metric filter are deployed in the separate
 `UniBudgetStack-Monitoring` stack, which imports the existing log group and SNS

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
+import { resolveDeploymentAlarmName } from '../lib/deployment-context';
 import { UniBudgetMonitoringStack } from '../lib/monitoring-stack';
 import { UniBudgetStack } from '../lib/cdk-stack';
 
@@ -20,6 +21,9 @@ const cloudFrontOriginPrefixListIdContext = app.node.tryGetContext(
 const supabaseHostContext = app.node.tryGetContext('supabaseHost');
 const supabasePortContext = app.node.tryGetContext('supabasePort');
 const supabaseDatabaseContext = app.node.tryGetContext('supabaseDatabase');
+const deploymentAlarmNameContext = app.node.tryGetContext(
+  'deploymentAlarmName',
+);
 const monitoringOnly = app.node.tryGetContext('monitoringOnly') === 'true';
 
 const requiredContext = (name: string): string => {
@@ -50,10 +54,12 @@ if (monitoringOnly) {
     logGroupName: app.node.tryGetContext('logGroupName'),
   });
 } else {
+  const desiredCount =
+    desiredCountContext === undefined ? 0 : Number(desiredCountContext);
+
   new UniBudgetStack(app, 'UniBudgetStack', {
     env: account && region ? { account, region } : undefined,
-    desiredCount:
-      desiredCountContext === undefined ? 0 : Number(desiredCountContext),
+    desiredCount,
     imageTag:
       imageTagContext === undefined ? undefined : String(imageTagContext),
     cloudFrontOriginPrefixListId:
@@ -72,5 +78,12 @@ if (monitoringOnly) {
       supabaseDatabaseContext === undefined
         ? undefined
         : String(supabaseDatabaseContext),
+    // Required as soon as the deployment starts tasks: the monitoring stack
+    // owns the alarm and can only be deployed after this stack exists, so the
+    // name arrives here instead of through a cross-stack reference.
+    deploymentAlarmName: resolveDeploymentAlarmName(
+      desiredCount,
+      deploymentAlarmNameContext,
+    ),
   });
 }

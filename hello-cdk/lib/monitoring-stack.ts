@@ -97,6 +97,20 @@ export class UniBudgetMonitoringStack extends cdk.Stack {
       defaultValue: 0,
     });
 
+    // A 5xx response is an access record at level "warn", so the error filter
+    // above cannot see it. This filter matches the numeric status field that
+    // every request record carries, which is the only CloudWatch signal that
+    // reacts before ECS replaces a failing task: the load balancer removes an
+    // unhealthy target within about a second, so UnHealthyHostCount never
+    // stays broken for the two periods that alarm requires.
+    new logs.MetricFilter(this, 'Application5xxMetricFilter', {
+      logGroup: applicationLogGroup,
+      filterPattern: logs.FilterPattern.numberValue('$.status', '>=', 500),
+      metricNamespace: 'UniBudget/Application',
+      metricName: 'Http5xxCount',
+      defaultValue: 0,
+    });
+
     const target5xx = new cloudwatch.Alarm(this, 'Target5xxAlarm', {
       alarmName: `${ALARM_NAME_PREFIX}-Target5xx`,
       alarmDescription:
@@ -182,5 +196,27 @@ export class UniBudgetMonitoringStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     structuredErrors.addAlarmAction(notify);
+
+    // Fires on the first minute that contains a 5xx record. A single period at
+    // a threshold of zero is deliberate: a deployment that fails its readiness
+    // probe is removed within about a minute, so any two-period window misses
+    // it. This is also the alarm the ECS service monitors as a deployment
+    // alarm, which is what makes the rollback automatic.
+    const request5xx = new cloudwatch.Alarm(this, 'Request5xxAlarm', {
+      alarmName: `${ALARM_NAME_PREFIX}-Request5xx`,
+      alarmDescription:
+        'A request returned a 5xx response in a one-minute period',
+      metric: new cloudwatch.Metric({
+        namespace: 'UniBudget/Application',
+        metricName: 'Http5xxCount',
+        statistic: 'Sum',
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    request5xx.addAlarmAction(notify);
   }
 }

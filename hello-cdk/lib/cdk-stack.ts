@@ -37,6 +37,13 @@ export interface UniBudgetStackProps extends cdk.StackProps {
   supabasePort?: string;
   supabaseDatabase?: string;
   cloudFrontOriginPrefixListId?: string;
+  /**
+   * CloudWatch alarm the ECS service monitors during a deployment. When it
+   * enters ALARM, the deployment fails and ECS rolls back to the last
+   * completed task definition. It is passed by name, not as an alarm object,
+   * because the alarm is owned by the separate monitoring stack.
+   */
+  deploymentAlarmName?: string;
 }
 
 function isValidDnsHostname(value: string): boolean {
@@ -65,6 +72,15 @@ export class UniBudgetStack extends cdk.Stack {
     }
     if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(imageTag)) {
       throw new Error('imageTag must be a valid container image tag.');
+    }
+    const deploymentAlarmName = props.deploymentAlarmName?.trim() || undefined;
+    if (
+      deploymentAlarmName !== undefined &&
+      !/^[A-Za-z0-9_-]{1,255}$/.test(deploymentAlarmName)
+    ) {
+      throw new Error(
+        'deploymentAlarmName must be a valid CloudWatch alarm name.',
+      );
     }
     // Never default the pooler hostname. Supabase has regional and
     // project-specific pooler hosts, and a stale default silently connects to
@@ -425,6 +441,19 @@ export class UniBudgetStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroups: [applicationSecurityGroup],
       circuitBreaker: { rollback: true },
+      // The circuit breaker alone cannot stop this failure: ECS clamps its
+      // bounded-percent threshold to a minimum of three failed tasks, so a
+      // single-task service would need three failed launches before it rolled
+      // back. A deployment alarm fails the rollout as soon as the application
+      // reports a 5xx, without waiting for that count.
+      ...(deploymentAlarmName
+        ? {
+            deploymentAlarms: {
+              alarmNames: [deploymentAlarmName],
+              behavior: ecs.AlarmBehavior.ROLLBACK_ON_ALARM,
+            },
+          }
+        : {}),
       minHealthyPercent: 100,
       maxHealthyPercent: 200,
       enableExecuteCommand: false,

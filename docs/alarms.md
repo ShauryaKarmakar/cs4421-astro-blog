@@ -1,7 +1,7 @@
 # CloudWatch alarms and operator response
 
 `hello-cdk/lib/monitoring-stack.ts` defines the separate monitoring stack with
-four alarms and one metric filter. The alarms are only *deployed* when that
+five alarms and two metric filters. The alarms are only *deployed* when that
 stack is executed; they are only *notifying* when it imports an existing SNS
 topic with a confirmed subscription. The physical alarm names are explicit and
 start with `UniBudgetStack-Monitoring-`, so they match the topic policy's
@@ -21,8 +21,9 @@ copy-pasteable Logs Insights queries are in [logging.md](logging.md).
 
 | Item | Code | Deployed | Notifying |
 | --- | --- | --- | --- |
-| Four alarms | Yes (`UniBudgetStack-Monitoring`) | **Yes** — final stack `UPDATE_COMPLETE` on 2026-10-25 17:39 UTC; four alarms present | CloudWatch executed the SNS action successfully; inbox receipt not independently verified |
+| Five alarms | Yes (`UniBudgetStack-Monitoring`) | Four deployed on 2026-10-25; `Request5xx` added on 2026-10-26 and not yet deployed to production | CloudWatch executed the SNS action successfully; inbox receipt not independently verified |
 | `level=error` metric filter | Yes, in the monitoring stack | **Yes** — one filter on `/unibudget/ecs/application` | n/a |
+| `status>=500` metric filter | Yes, in the monitoring stack | Added 2026-10-26; verified in the drill account, not yet deployed to production | Drives `Request5xx` |
 | SNS topic + subscription | Created; policy applied | **Yes** — topic exists | **Confirmed** — one email subscription has a real ARN |
 
 The stack deliberately imports a topic ARN instead of creating a topic. This
@@ -43,7 +44,7 @@ operator address is now confirmed and has a real subscription ARN. The
 recipient is not committed to the repository.
 
 The separate stack `UniBudgetStack-Monitoring` is deployed (`UPDATE_COMPLETE`,
-2026-10-25 17:39 UTC; created 17:33 UTC). It contains exactly four alarms, one metric filter, and
+2026-10-25 17:39 UTC; created 17:33 UTC). At that time it contained exactly four alarms, one metric filter, and
 `CDKMetadata`; it did not modify the application stack, ECS, ECR, IAM, the log
 group, or the SNS topic. The application stack remained `UPDATE_COMPLETE` with
 its previous `LastUpdatedTime` (2026-10-24 22:59:56 UTC), and ECS stayed at
@@ -65,7 +66,7 @@ receipt, and it does not prove metric-threshold evaluation.
 | Log group | `/unibudget/ecs/application` exists, 7-day retention |
 | Metric filter | on that log group, pattern `{ $.level = "error" }`, metric `UniBudget/Application` `StructuredErrorCount` |
 | Filter vs emitted logs | matched: live log stream contains `{"level":"info","event":"http.request",…,"requestId":…}` records, so `level` is a top-level JSON field |
-| Alarms | exactly four `UniBudgetStack-Monitoring-*`, all `OK`, each with `unibudget-production-alarms` as its action |
+| Alarms | exactly four `UniBudgetStack-Monitoring-*`, all `OK`, each with `unibudget-production-alarms` as its action (a fifth, `Request5xx`, was added on 2026-10-26) |
 | Subscription | one email subscription with a real `SubscriptionArn` (confirmed) |
 | Notification delivery | CloudWatch executed the SNS action for a manual `StructuredErrors` transition on 2026-10-25 17:34 UTC; inbox receipt still unverified |
 
@@ -80,6 +81,41 @@ was generated for this review.
 | `UnhealthyTargetsAlarm` | `AWS/ApplicationELB` `UnHealthyHostCount`, same dimensions | Maximum > 0 | 2 x 1 min | `notBreaching` |
 | `LiveTaskCountAlarm` | `AWS/ECS` `LiveTaskCount`, `ClusterName` and `ServiceName` | Average < `desiredCount` | 3 x 1 min | `breaching` |
 | `StructuredErrorAlarm` | `UniBudget/Application` `StructuredErrorCount` from the metric filter | Sum > 5 | 2 x 5 min | `notBreaching` |
+| `Request5xxAlarm` | `UniBudget/Application` `Http5xxCount` from the `status>=500` metric filter | Sum > 0 | 1 x 1 min | `notBreaching` |
+
+### Why `Request5xxAlarm` exists
+
+The four original alarms only cover **in-service** failures. A deployment that
+fails its readiness probe is replaced by ECS within about a second of the first
+unhealthy report, so `UnHealthyHostCount` never stays non-zero long enough for
+the two-period `UnhealthyTargetsAlarm`; the ALB does not count health-check
+responses in `HTTPCode_Target_5XX_Count`; and 5xx access records are written at
+`level: "warn"`, not `error`.
+
+The physical alarm is `UniBudgetStack-Monitoring-Request5xx`. `Http5xxCount`
+counts the numeric `status` field of every request record, including ALB health
+probes, so one failing minute is enough. The zero
+threshold and single evaluation period are deliberate and are the reason this
+alarm is also the ECS **deployment alarm**: when it enters `ALARM` during a
+rollout, ECS marks the deployment failed and rolls back to the last completed
+task definition. The application stack accepts the alarm name through the
+`deploymentAlarmName` context, because the alarm is owned by this separate
+stack. The name is **mandatory for any deployment that starts tasks**: the CDK
+entry point refuses `desiredCount > 0` without it, and the `Deploy` workflow
+verifies the alarm exists, measures `Http5xxCount`, has actions enabled, passes
+it to the stack, and then checks the service still lists it with rollback
+enabled. Without those checks a service can be described as protected while
+ECS is watching nothing — the exact failure mode of the first drill run.
+
+To confirm the wiring on a running service (read-only):
+
+```bash
+aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+  --query 'services[0].deploymentConfiguration.{alarms:alarms,breaker:deploymentCircuitBreaker}'
+```
+
+The expected output names `UniBudgetStack-Monitoring-Request5xx` with
+`enable: true` and `rollback: true`, alongside the enabled circuit breaker.
 
 The monitoring stack always creates `LiveTaskCountAlarm`; it requires a
 positive `desiredCount` and uses that value as the threshold. This is the
@@ -251,11 +287,11 @@ There was no `AWS::ECS::Service`, `AWS::ECS::TaskDefinition`,
 `UniBudgetStack-Monitoring-LiveTaskCount`, and
 `UniBudgetStack-Monitoring-StructuredErrors`.
 
-### Why the old application-stack change set remains blocked
+### Why the old application-stack change set was never executed
 
 The earlier no-execute change set `unibudget-monitoring-20261025-1` on
-`UniBudgetStack` is still `AVAILABLE` and still must not be executed. It exposed
-additional modifications that the diff did not show:
+`UniBudgetStack` was never executed. It exposed additional modifications that
+the diff did not show:
 
 - `ApplicationService423C69C6` — dynamic `TaskDefinition` reference;
 - `ApplicationTaskE9624EFC` and `MigrationTask69EAEF9D` — `ContainerDefinitions`
@@ -264,15 +300,17 @@ additional modifications that the diff did not show:
   references to the same repository ARN.
 
 These are CloudFormation dynamic-reference effects of the ECR resource update.
-Executing that change set could register new task-definition revisions and start
-an ECS deployment even though the image tag remains `v1`. It remains blocked
-pending a safe ECR/application-stack reconciliation. Do not delete it while the
-investigation is open; it is the evidence for the discrepancy.
+Executing that change set would have registered new task-definition revisions
+and started an ECS deployment even though the image tag remained `v1`.
 
-The application stack no longer defines alarm or metric-filter resources. The
-old change set remains dangerous only if executed: it would recreate the four
-alarms and the filter that are now owned by the monitoring stack. Do not execute
-it; removal of the stale change set needs separate approval.
+The application stack no longer defines alarm or metric-filter resources, so
+that revision of the template is obsolete. It also no longer exists to be
+executed: a read-only check on 2026-10-26 (`aws cloudformation list-change-sets`)
+returns an empty list for `UniBudgetStack`, `UniBudgetStack-Monitoring`, and
+`StaticSiteStack`. The application stack was last updated 2026-10-25T19:37Z,
+after the change set was created, and CloudFormation discards a stack's change
+sets when the stack is updated. Nothing needs to be deleted, and no stale
+change set remains as a deployment path.
 
 ### Required permissions
 
@@ -363,6 +401,19 @@ progress. Because missing data is `breaching`, a service that emits no
    count. A direct service scale to zero will therefore trip it; do not use a
    manual scale to zero as an operating state.
 
+### `Request5xxAlarm`
+
+Likely causes: a failed deployment whose readiness endpoint returns 5xx, a
+viewer-facing application error, or a dependency failure that surfaces as a 5xx
+response. First steps:
+
+1. `aws cloudwatch describe-alarm-history` for the transition time, then query
+   `/unibudget/ecs/application` for `status >= 500` in the same window.
+2. If it fired during a rollout, confirm ECS rolled the service back and that
+   the running image digest matches the previous release.
+3. Correlate the failing `requestId` with its access record to see whether the
+   failure is an ALB health probe (`path = "/api/health"`) or viewer traffic.
+
 ### `StructuredErrorAlarm`
 
 Likely causes: database query failures, migration/schema mismatch, or an
@@ -383,19 +434,52 @@ steps:
   change (`Successfully executed action arn:aws:sns:...`). Inbox receipt was not
   independently verified, and the manual transition was not a real metric
   threshold breach.
-- No synthetic production error was generated. The parser is covered by unit
+- The 2026-10-26 drill crossing **did** prove metric evaluation, but its
+  evidence captured only `StateUpdate` history. No `Action` item exists for it,
+  so notification delivery from the drill is unverified even though the alarm
+  carries the SNS action.
+- No synthetic **production** error was generated. The parser is covered by unit
   tests locally; live metric increments require a real event. Do not break a
   route to test this metric.
-- `Target5xx`, `UnhealthyTargets`, and `LiveTaskCount` were `OK` at the final
-  read-back. `StructuredErrors` was restored to `OK` after the manual test.
-  Their threshold-crossing behavior has not been observed end to end.
+- `Target5xx`, `UnhealthyTargets`, `LiveTaskCount`, and `StructuredErrors` were
+  `OK` at the final read-back. Their threshold-crossing behavior has not been
+  observed end to end.
 - The existing `Deploy` workflow is not a monitoring-only path: it builds and
   pushes an image, checks a release tag, and runs migrations. Use the reviewed
   separate-stack `cdk deploy` path above instead.
 - The alarm names must stay under `UniBudgetStack-*` to match the live SNS
   topic policy. If the stack is renamed, update the policy before expecting
   delivery.
-- `UniBudgetStack` contains no alarm or metric-filter resources; its test
-  asserts that absence. The old application-stack change set would recreate
-  duplicates if executed, so it must remain unexecuted until separately
-  removed.
+- `UniBudgetStack` creates no CloudWatch alarm or metric-filter resources of
+  its own, and its test asserts that. It does now reference one alarm **by
+  name** in the ECS service's `deploymentConfiguration.alarms`, which is why
+  the alarm name is passed as context rather than through a cross-stack
+  reference. A deployment alarm that does not exist fails the rollout, so the
+  monitoring stack must be deployed first.
+
+## Observed threshold crossing (drill account, 2026-10-26)
+
+The retest of the rollback drill is the first real crossing. In the drill
+account `293633790894` the `Request5xx` alarm moved `OK → ALARM → OK` on its own
+traffic. The history record carries a metric evaluation, not a manual set:
+
+> Threshold Crossed: 1 datapoint [2.0 (26/10/26 20:33:00)] was greater than the
+> threshold (0.0).
+
+with `sampleCount: 12` for that minute — twelve request records evaluated, two
+of them 5xx. A manual `set-alarm-state` records no threshold evaluation at all.
+
+| Time (UTC) | Event |
+| --- | --- |
+| 20:33:37 | First `/api/health` `500` record from the deliberately broken task |
+| 20:34:10 | `Request5xx` transitioned `OK → ALARM` (33 s after the bad probe) |
+| 20:34:14 | ECS: `deployment failed: alarm detected`, then `rolling back` |
+| 20:36:10 | `Request5xx` returned to `OK` after the rollback completed |
+
+This proves the filter, the threshold, and the deployment-alarm wiring. It does
+**not** prove that a notification was delivered: only `StateUpdate` history
+items were captured, no `Action` item appears in the evidence, and no
+subscription was confirmed in the drill account. Delivery is therefore recorded
+as unverified, not as failed. Details and raw output are in
+`drill-evidence-retest/cloudwatch-alarm-history.txt` and
+`docs/rollback-drill-2.md` §8.

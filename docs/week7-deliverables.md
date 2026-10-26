@@ -12,8 +12,9 @@ Most AWS facts below come from read-only calls (`Describe*`, `List*`,
 HTTPS `GET` requests) made on 2026-10-25. Starting the preview evaluates the
 policy but expires nothing. The separate monitoring-stack deployment and the
 manual alarm-state notification test were approved writes recorded in section
-4. No application deployment, image push, migration, or Rollback Drill was
-performed while preparing this report.
+4. No application deployment, image push, or migration was performed while
+preparing this report. Rollback Drill 2 was run separately on 2026-10-26 in the
+drill account; §5 records it.
 
 ## Summary
 
@@ -21,11 +22,11 @@ performed while preparing this report.
 | --- | --- | --- |
 | 1 | Automated container CD (tests, Docker build, immutable ECR push, ECS rollout) | **Met** by reusing `.github/workflows/deploy.yml`; tests now run in that workflow |
 | 2 | Semantic versioning distinct from immutable image identity | **Partially met** — workflow now enforces semver tags and records digests; `v1.1.0` is the release candidate; no semver-tagged image exists yet and `v1.0.0`/`v1` remain unreconciled |
-| 3 | ECS application reachable through the load balancer, `/api/health` works | **Met for `v1`**, verified through CloudFront. Blog SSR fix is committed and validated locally; production stays broken until the next release |
-| 4 | CloudWatch observability: structured logs, Logs Insights, metrics and alarms | **Met for deployment; partial for proof** — logs and Logs Insights verified; four alarms and an error metric filter are deployed in `UniBudgetStack-Monitoring` and `OK`; CloudWatch executed the SNS action, but inbox receipt and a real threshold crossing are unproven |
-| 5 | Rollback Drill 2 | **Outstanding — not executed.** Detailed runbook at [rollback-drill-2.md](rollback-drill-2.md); no timings claimed |
-| 6 | Outage lifecycle with a blameless post-mortem | **Met as documentation**; template included; no live exercise |
-| 7 | Release strategy comparison and the strategy actually used | **Met** — ECS rolling with circuit-breaker rollback |
+| 3 | ECS application reachable through the load balancer, `/api/health` works | **Met**, verified through CloudFront. Production runs `v1.1.3`; on 2026-10-26 `/api/health` and `/login` returned 200, `/blog/first-post` 200, and an unknown slug 404 |
+| 4 | CloudWatch observability: structured logs, Logs Insights, metrics and alarms | **Met for deployment; partial for proof** — logs and Logs Insights verified; four alarms and an error metric filter are deployed in production and `OK`; CloudWatch executed the SNS action, but inbox receipt is unproven. A real threshold crossing was observed in the drill account on 2026-10-26 (§5) |
+| 5 | Rollback Drill 2 | **Met in the drill account on 2026-10-26** — run 1 partial (manual rollback), run 2 automatic (alarm detected in 33 s, rollback in 3 m 10 s). Production is not yet redeployed with the fix; see [rollback-drill-2.md](rollback-drill-2.md) §7–§8 |
+| 6 | Outage lifecycle with a blameless post-mortem | **Met** — template, plus a real blameless post-mortem of run 1 in [rollback-drill-2-result.md](rollback-drill-2-result.md); run 2 exercised the corrected path |
+| 7 | Release strategy comparison and the strategy actually used | **Met** — ECS rolling with an ECS deployment alarm (the circuit breaker stays enabled but needs three failed launches at this service size) |
 | 8 | Evidence mapping | This document |
 
 ## 1. Automated container CD
@@ -213,12 +214,16 @@ The target group probes `/api/health` every 30 s with a 5 s timeout, requires
 two consecutive successes to become healthy and three failures to become
 unhealthy.
 
-**Known defect in the running release:** `/blog/<slug>` still returns 500. The
-application log stream contains the corresponding stack trace at
+**Known defect at the time of that check:** `/blog/<slug>` returned 500 on
+`v1`. The application log stream contains the corresponding stack trace at
 2026-10-25 09:53:27 (`[...slug]`, `dist/server/...`). The SSR fix is committed
 in `9a5e59c` (2026-10-25) but `v1` was built and pushed on 2026-10-24, so the
-fix is not in the running image. Availability above therefore describes the
-login and health paths, not the blog routes.
+fix is not in that image.
+
+**Superseded 2026-10-26:** production now runs `v1.1.3` (task definition
+revision 4). A read-only check through CloudFront returned `/api/health` 200,
+`/login` 200, `/blog/first-post` 200, and 404 for an unknown slug, so the
+defect above no longer describes the running release.
 
 Local validation of the committed fix (not production evidence): the server
 was built with `npm run build` and run from `dist/server/entry.mjs` with
@@ -327,7 +332,8 @@ explicit alarm names are `UniBudgetStack-Monitoring-Target5xx`,
 live SNS topic policy's `UniBudgetStack-*` source condition. A manual
 `StructuredErrors` state transition recorded
 `Successfully executed action arn:aws:sns:...`; inbox receipt was not
-independently verified, and no real metric threshold crossing was generated.
+independently verified at that time. A real threshold crossing was later
+observed in the drill account (§5), not in production.
 
 Thresholds are intentionally low for a single-task service. A p95 latency
 alarm (`TargetResponseTime > 2 s` for 3 periods) and a `HealthyHostCount < 1`
@@ -335,14 +341,33 @@ alarm were considered but not added: the unhealthy-target and task-count
 alarms already cover zero healthy capacity, and latency has no measured
 baseline yet.
 
-## 5. Rollback Drill 2 — NOT EXECUTED
+## 5. Rollback Drill 2 — EXECUTED (2026-10-26, drill account only)
 
-No drill was run. Nothing below is a result; it is the procedure and the
-evidence template to fill in when it is approved and executed. The detailed,
-canonical runbook and evidence table are in
-[rollback-drill-2.md](rollback-drill-2.md).
+Two runs were executed in disposable account `293633790894`. Production was not
+touched. The canonical record is [rollback-drill-2.md](rollback-drill-2.md)
+(§7 run 1, §8 run 2).
 
-### Prerequisite: an isolated environment (not yet provisioned)
+| | Run 1 | Run 2 (after fixes) |
+| --- | --- | --- |
+| Deliberate failure | `/api/health` 500, `/api/live` 200 | same |
+| Detection | ALB target health, 1 m 52 s after the task started | `Request5xx` alarm, 33 s after the first failed probe |
+| Rollback | manual `ecs update-service` | **automatic**, ECS deployment alarm |
+| T0 → healthy | 18 m 27 s | 3 m 10 s |
+| Viewer impact | none | none |
+| Result | partial | pass, except unverified notification delivery |
+
+Run 1 exposed two real gaps: no alarm could observe a failing readiness probe,
+and the single-task service never reached the circuit breaker's effective
+threshold of three failed tasks. Run 2 added the `status >= 500` filter, the
+`Request5xx` alarm, and the ECS deployment alarm, and demonstrated automatic
+rollback with no operator action. Notification delivery is still unverified:
+that run captured no `Action` history item.
+
+The procedure below is the pre-drill text, kept for reference. Its
+`circuitBreaker`-only expectation was wrong for a one-task service and is now
+corrected in [ADR 0006](adr/0006-rolling-deployment-and-rollback.md).
+
+### Prerequisite: an isolated environment (provisioned 2026-10-26)
 
 The CDK stack and the workflow both target the single `UniBudgetStack` name,
 the repository is named for that stack, and several resources use fixed names
@@ -352,11 +377,11 @@ option today is a **separate AWS account** with its own CDK bootstrap, ECR,
 ALB, CloudFront distribution, and Supabase project/database. That account must
 not share the production log group or secrets.
 
-Work required before the drill can run:
+Work required before the drill could run (completed 2026-10-26):
 
 1. Choose a drill account and confirm the deploy role, OIDC trust, and CDK
    bootstrap there (the existing workflow's role ARN is account-specific).
-2. Provision the drill stack with `bootstrapOnly` or `desiredCount=0` and a
+2. Provision the drill stack by hand with `cdk deploy -c desiredCount=0` and a
 drill-only image tag; do not point it at production Supabase credentials.
 3. Seed a disposable database and confirm `/api/health`, `/login`, and the new
    `/blog/<slug>` check behave the same as production.
@@ -375,10 +400,12 @@ it needs a separate approved maintenance window and rollback authority.
    ECR** under a drill-only tag (for example a health endpoint that returns
    503, or a container that exits non-zero). Keep it out of the release tag
    namespace and never push it to the production repository.
-3. Deploy that tag with the same pipeline. The ECS deployment circuit breaker
-   (`circuitBreaker: { rollback: true }`) should detect the failed rollout,
-   and the target group should mark the new tasks unhealthy after three failed
-   probes.
+3. Deploy that tag with the same pipeline. The ECS **deployment alarm**
+   (`deploymentAlarms` with `ROLLBACK_ON_ALARM`) fails the rollout as soon as
+   the application reports a 5xx, and the target group marks the new tasks
+   unhealthy after three failed probes. The circuit breaker's own threshold is
+   three failed tasks, which a one-task service reaches only after repeated
+   retries, so it is not the rollback path used here.
 4. Observe and timestamp: first failed health probe, `UnHealthyHostCount`
    transition, ECS deployment `FAILED`, rollback start and completion, and the
    moment `/api/health` returns 200 again.
@@ -391,14 +418,14 @@ it needs a separate approved maintenance window and rollback authority.
 
 | Item | Required | Recorded |
 | --- | --- | --- |
-| Detection latency | < 2 min from unhealthy task start | — |
-| Rollback completes without manual intervention | yes | — |
-| Service healthy again | `/api/health` 200 | — |
-| Traffic impact | no sustained 5xx beyond the probe window | — |
-| Baseline restored | same task definition and digest | — |
-| Start / end time | UTC | — |
+| Detection latency | < 2 min from unhealthy task start | Run 1: 41 s to first failed probe. Run 2: alarm 33 s after first failed probe |
+| Rollback completes without manual intervention | yes | Run 1: **no** (explicit `update-service`). Run 2: **yes** |
+| Service healthy again | `/api/health` 200 | Both runs: 200 |
+| Traffic impact | no sustained 5xx beyond the probe window | Both runs: public endpoint 200 throughout |
+| Baseline restored | same task definition and digest | Both runs: identical digest |
+| Start / end time | UTC | Run 1 19:11:37Z–19:30:04Z; run 2 20:32:47Z–20:35:57Z |
 
-Status: **not executed; no timings or pass claim.**
+Status: **run 1 partial; run 2 pass except unverified notification delivery.**
 
 ## 6. Outage lifecycle
 
@@ -481,8 +508,8 @@ Action items (owner, due date):
   `.github/workflows/deploy.yml`; the 5xx, unhealthy-target, live-task, and
   structured-error alarms are deployed in `UniBudgetStack-Monitoring`; the
   route regression tests remain in the suite. CloudWatch executed the SNS
-  action successfully; inbox receipt and a real threshold crossing are still
-  unproven.
+  action successfully; inbox receipt is still unproven. A real threshold
+  crossing was observed in the drill account on 2026-10-26 (§5).
 
 ## 7. Release strategies
 
@@ -497,8 +524,10 @@ UniBudget uses **ECS rolling deployment** on Fargate:
 
 - `minHealthyPercent: 100`, `maxHealthyPercent: 200`, so a new task must be
   healthy before an old one is removed;
-- `circuitBreaker: { rollback: true }` returns the service to the last
-  completed deployment when the new one fails;
+- the `Request5xx` deployment alarm returns the service to the last completed
+  deployment as soon as the application reports a 5xx during a rollout;
+- `circuitBreaker: { rollback: true }` stays enabled as restart behaviour and a
+  second line of defence (its threshold is three failed tasks at this size);
 - the ALB target group gates the rollout on `/api/health` (30 s interval,
   2 healthy / 3 unhealthy);
 - images are immutable, so a rollback is always a known digest;
@@ -506,8 +535,10 @@ UniBudget uses **ECS rolling deployment** on Fargate:
   so there is no edge cache to purge when the task set changes.
 
 There is no blue/green environment and no canary traffic split. A failed
-rollout is observed through the ECS deployment state and target health, and
-the circuit breaker performs the rollback automatically.
+rollout is observed through the ECS deployment state, target health, and the
+`Request5xx` alarm; the deployment alarm performs the rollback automatically
+(run 2 reached steady state on the baseline 3 m 10 s after the broken revision
+was applied).
 
 ## 8. Evidence map and outstanding work
 
@@ -515,19 +546,22 @@ the circuit breaker performs the rollback automatically.
 | --- | --- | --- | --- |
 | Container CD | `.github/workflows/deploy.yml`, `Dockerfile`, ECR repository, ECS service | Tests step added; CI suite; running `v1`; deployment `COMPLETED` | Met (manual dispatch by design) |
 | Semver | Semver workflow gate; immutable ECR tags; OCI version/revision labels; digest capture | `v1` tag + digest observed; `v1.1.0` candidate not released; provenance labels not in any image yet | Partial |
-| Availability | CloudFront → ALB → `/api/health`; target group probe; post-deploy blog 200 and unknown-slug 404 checks | Production `/api/health` 200, `/login` 200, `/blog/first-post` **500**; local 200/404; service 1/1 | Met for `v1`; blog route still broken until release |
-| Observability | `/unibudget/ecs/application`, JSON error logs, separate four-alarm + metric-filter stack, SNS action | Logs Insights executed (10 rows; 0 structured errors); CDK synth + **27/27** tests; monitoring stack `UPDATE_COMPLETE`; four alarms `OK`; alarm history shows successful SNS action | Met for deployment; inbox receipt and real threshold crossing unproven |
-| Rollback Drill 2 | Circuit breaker + procedure above | **Not executed** | Outstanding |
+| Availability | CloudFront → ALB → `/api/health`; target group probe; post-deploy blog 200 and unknown-slug 404 checks | Production `/api/health` 200, `/login` 200, `/blog/first-post` 200, unknown slug 404 (read-only check 2026-10-26); service 1/1 | Met |
+| Observability | `/unibudget/ecs/application`, JSON error logs, separate four-alarm + metric-filter stack, SNS action | Logs Insights executed (10 rows; 0 structured errors); CDK synth + **27/27** tests; monitoring stack `UPDATE_COMPLETE`; four alarms `OK`; alarm history shows successful SNS action | Met for deployment; inbox receipt unproven, threshold crossing shown only in the drill account |
+| Rollback Drill 2 | Deployment alarm + circuit breaker + procedure above | Executed twice on 2026-10-26 in the drill account; run 2 rolled back automatically (`drill-evidence-retest/`) | **Met in the drill account**; production redeploy outstanding |
 | Outage lifecycle | Detection/triage/mitigation/post-mortem above | Documentation only | Met as documentation |
 | Release strategies | Rolling + circuit breaker in CDK | CDK synthesis tests; service config | Met |
 | Evidence | This document | Read-only AWS calls on 2026-10-25 | Met |
 
 ### Remaining actions before claiming the full checklist
 
-1. Execute Rollback Drill 2 in a separate drill account and record timings
-   using [rollback-drill-2.md](rollback-drill-2.md).
-2. Verify inbox receipt of the SNS notification and, once a safe non-production
-   method exists, observe one real threshold crossing. Resolve the
+1. Deploy the drill fixes to production in the fixed order: monitoring stack
+   first (`Request5xx` + the `status >= 500` filter), then a normal deployment
+   (the service needs the alarm as its deployment alarm). Record the first
+   production rollout under the new alarm.
+2. Verify inbox receipt of the SNS notification, and observe one real threshold
+   crossing in production (the drill account demonstrated one on 2026-10-26).
+   Resolve the
    ECS/task-definition dynamic changes found in the old `UniBudgetStack`
    no-execute change set; do not execute it, because it would recreate the
    monitoring resources. See [alarms.md](alarms.md).

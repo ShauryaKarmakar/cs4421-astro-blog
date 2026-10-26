@@ -131,12 +131,13 @@ describe('documented Logs Insights queries', () => {
 		expect([...unknown]).toEqual([]);
 	});
 
-	it('documents the four deployed alarm names', () => {
+	it('documents the five deployed alarm names', () => {
 		for (const name of [
 			'UniBudgetStack-Monitoring-Target5xx',
 			'UniBudgetStack-Monitoring-UnhealthyTargets',
 			'UniBudgetStack-Monitoring-LiveTaskCount',
 			'UniBudgetStack-Monitoring-StructuredErrors',
+			'UniBudgetStack-Monitoring-Request5xx',
 		]) {
 			expect(read('docs/chaos-drill.md')).toContain(name);
 			expect(read('docs/alarms.md')).toContain(name);

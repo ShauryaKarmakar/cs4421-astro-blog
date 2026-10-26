@@ -131,7 +131,7 @@ describe('deployment workflow contracts', () => {
     expect(cloudFrontStepIndex).toBeLessThan(migrationStepIndex);
 
     const cloudFrontStep = stepBlock('Verify CloudFront Delivery Configuration');
-    expect(cloudFrontStep).toContain('if: inputs.bootstrapOnly != true');
+    expect(cloudFrontStep).not.toContain('bootstrapOnly');
     expect(cloudFrontStep).toContain(
       'DISTRIBUTION_ID: ${{ steps.outputs.outputs.cloudfront_distribution_id }}',
     );
@@ -232,8 +232,9 @@ describe('deployment workflow contracts', () => {
   it('keeps the safe deployment order', () => {
     const names = [
       'Validate Deployment Inputs',
-      'Create the Initial Stack Without Starting the Application',
+      'Confirm the Stack Exists',
       'Read Stack Outputs',
+      'Verify the Deployment Alarm Before Rolling Out',
       'Verify ECR Retention Policy Before Image Push',
       'Verify CloudFront Delivery Configuration',
       'Build and Push Application Image',
@@ -421,6 +422,78 @@ describe('repository hygiene contracts', () => {
   it('leaves monitoring ownership out of the application deployment workflow', () => {
     expect(workflow).not.toContain('ALARM_TOPIC_ARN');
     expect(workflow).not.toContain('-c alarmTopicArn');
+    // The workflow references the alarm by name but never creates it: the
+    // monitoring stack stays a separate, separately approved deployment.
+    expect(workflow).not.toContain('cdk deploy UniBudgetStack-Monitoring');
+    expect(workflow).not.toContain('-c monitoringOnly');
+  });
+
+  it('updates an existing stack and never bootstraps a new one', () => {
+    expect(workflow).not.toContain('bootstrapOnly');
+    expect(workflow).not.toContain('Create the Initial Stack');
+
+    const exists = stepBlock('Confirm the Stack Exists');
+    expect(exists).toContain('aws cloudformation describe-stacks');
+    expect(exists).toContain('Create the stack first');
+    expect(exists).toContain('exit 1');
+  });
+
+  it('rolls out only with a verified deployment alarm', () => {
+    const validation = stepBlock('Validate Deployment Inputs');
+    const preflight = stepBlock('Verify the Deployment Alarm Before Rolling Out');
+    const deploy = stepBlock('Deploy the Stack with the Migrated Image');
+
+    expect(workflow).toContain(
+      "DEPLOYMENT_ALARM_NAME: ${{ vars.DEPLOYMENT_ALARM_NAME || 'UniBudgetStack-Monitoring-Request5xx' }}",
+    );
+    expect(validation).toContain('DEPLOYMENT_ALARM_NAME');
+    expect(validation).toContain(
+      'automatic rollback cannot be configured without one',
+    );
+
+    // The pre-flight proves the alarm exists and measures request failures,
+    // so a same-named alarm over another metric cannot pass.
+    expect(preflight).not.toContain('bootstrapOnly');
+    expect(preflight).toContain('aws cloudwatch describe-alarms');
+    expect(preflight).toContain('UniBudget/Application');
+    expect(preflight).toContain('Http5xxCount');
+    expect(preflight).toContain('ActionsEnabled');
+    expect(preflight).toContain(
+      'Deploy UniBudgetStack-Monitoring before rolling out the application',
+    );
+    expect(preflight).toContain('exit 1');
+
+    expect(deploy).toContain('-c deploymentAlarmName="$DEPLOYMENT_ALARM_NAME"');
+  });
+
+  it('verifies the deployment alarm before building the image or migrating', () => {
+    const preflightIndex = workflow.indexOf(
+      '      - name: Verify the Deployment Alarm Before Rolling Out\n',
+    );
+    const buildIndex = workflow.indexOf(
+      '      - name: Build and Push Application Image\n',
+    );
+    const migrationIndex = workflow.indexOf(
+      '      - name: Run the One-Off Migration Task\n',
+    );
+
+    expect(preflightIndex).toBeGreaterThan(-1);
+    expect(preflightIndex).toBeLessThan(buildIndex);
+    expect(preflightIndex).toBeLessThan(migrationIndex);
+  });
+
+  it('fails the release when the service lost its deployment alarm', () => {
+    const running = stepBlock('Verify the Running Image');
+
+    expect(running).toContain(
+      'DEPLOYMENT_ALARM_NAME: ${{ env.DEPLOYMENT_ALARM_NAME }}',
+    );
+    expect(running).toContain('.deploymentConfiguration.alarms.enable == true');
+    expect(running).toContain(
+      '.deploymentConfiguration.alarms.rollback == true',
+    );
+    expect(running).toContain('index($alarm)');
+    expect(running).toContain('automatic rollback is not configured');
   });
 
   it('records the published digest and verifies the running task uses it', () => {

@@ -1,6 +1,6 @@
 # UniBudget release readiness
 
-Last updated: 2026-10-25
+Last updated: 2026-10-25 (production state); rollback-drill section added 2026-10-26
 
 This document separates what is implemented from what is tested, merged,
 deployed, and verified in production. A green local suite is not a deployment.
@@ -11,19 +11,19 @@ deployed, and verified in production. A green local suite is not a deployment.
 | --- | --- |
 | `main` | `a919b96` — merge of PR #41 (structured logging) after PR #42 (alarm identity); PRs #39/#40 remain in history |
 | Hardening branch | `feat/final-project-hardening` at `50d30cc`; merged via PR #40; merge-commit CI passed |
-| Production image | `...:v1`, digest `sha256:1a68b6ef…` |
+| Production image | `v1.1.3`, digest `sha256:168b26…`, task definition revision 4 (verified read-only 2026-10-26) |
 | ECS service | `ACTIVE`, desired 1 / running 1, primary deployment `COMPLETED` |
 | `/api/health` | **200** |
 | `/login` | **200** |
-| `/blog/first-post` | **500** — the running image predates the SSR fix |
+| `/blog/first-post` | **200** (verified read-only 2026-10-26) |
 | CloudWatch alarms | **four deployed** in `UniBudgetStack-Monitoring`, all `OK` at the final read-back; one metric filter deployed |
 | SNS topics | `unibudget-production-alarms` exists with its reviewed policy and one confirmed email subscription; CloudWatch executed its action successfully |
 | Monitoring stack | `UniBudgetStack-Monitoring` is `UPDATE_COMPLETE` (2026-10-25 17:39 UTC); change sets `unibudget-monitoring-20261025-2` and `-3` executed |
 | Deploy role | `unibudget-github-deploy` with `AdministratorAccess` |
 | CloudFront | `E30KFH719MS9Z0`, `Deployed`, HTTPS redirect, origin is the UniBudget ALB, minimum viewer TLS `TLSv1`; see [cloudfront-tls-plan.md](cloudfront-tls-plan.md) |
 | ECR policy | **safe**: tagged `*`/10 and untagged/10, applied out-of-band 2026-10-25; preview reports 0 expiring |
-| ECR images | 3 manifests (tagged `v1` plus two untagged) |
-| Rollback Drill 2 | not executed |
+| ECR images | immutable tags; production runs `v1.1.3` (baseline above); the legacy `v1` tag stays unreconciled |
+| Rollback Drill 2 | **executed twice on 2026-10-26** in drill account `293633790894`: run 1 partial (manual rollback), run 2 automatic. Production unchanged; see below |
 
 Read-only checks on 2026-10-25 confirmed the production service and route
 status above. No **application** deployment was performed; the separate
@@ -33,6 +33,34 @@ successfully in
 [run 40218210613](https://github.com/ShauryaKarmakar/cs4421-astro-blog/actions/runs/40218210613).
 The monitoring-ownership reconciliation described below is prepared in the
 worktree and is not part of `a919b96`.
+
+## Rollback drill execution (2026-10-26)
+
+Two runs were executed in disposable account `293633790894`; production was not
+touched, and this section does not change the production rows above.
+
+| | Run 1 | Run 2 (after the fixes) |
+| --- | --- | --- |
+| Failure | `/api/health` 500, `/api/live` 200 | same |
+| Detection | ALB target health, 1 m 52 s after the task started (2 m 5 s from T0) | `Request5xx` alarm, 33 s after the first failed probe |
+| Rollback | manual `ecs update-service` | automatic, ECS deployment alarm |
+| T0 → healthy | 18 m 27 s | 3 m 10 s |
+| Viewer impact | none; public 200 throughout | none |
+| Result | partial | pass, except unverified notification delivery |
+
+Run 1 exposed two gaps: no alarm could see a failing readiness probe, and the
+single-task service needed three failed launches to reach the circuit breaker's
+threshold, so recovery was manual. Run 2 added a `status >= 500` metric filter,
+the `Request5xx` alarm (1 × 1 min, `> 0`), and an ECS deployment alarm that
+rolls back on `ALARM`. Evidence: `drill-evidence/` (run 1) and
+`drill-evidence-retest/` (run 2); the record is
+[rollback-drill-2.md](rollback-drill-2.md).
+
+Production still runs the previous monitoring stack: four alarms, no
+`Request5xx`, and a service with no deployment alarm. Applying the fix needs the
+monitoring stack deployed first, then a normal deployment. The workflow now
+verifies the alarm before it builds or migrates, passes it to the stack, and
+fails the release if the service is not watching it.
 
 ## CloudFront verification
 
@@ -48,8 +76,8 @@ worktree and is not part of `a919b96`.
 | Route: `/api/live` | **200** |
 | Route: `/api/health` | **200** |
 | Route: `/login` | **200** |
-| Route: `/blog/first-post` | **500** — application image predates the merged fix |
-| Route: unknown blog slug | **500** — same stale-image issue |
+| Route: `/blog/first-post` | **200** (re-checked 2026-10-26; was 500 on the older `v1` image) |
+| Route: unknown blog slug | **404** (re-checked 2026-10-26; was 500 on `v1`) |
 
 The CloudFront origin, HTTPS redirect, cache policy, and ALB-only-via-CloudFront
 network path match the intended architecture. The `TLSv1` minimum viewer
@@ -70,19 +98,19 @@ of the monitoring deployment.
 
 | Area | Implemented | Locally tested | CI verified | Deployed | Verified in production |
 | --- | --- | --- | --- | --- | --- |
-| Blog SSR route | yes | yes (unit + built-server 200/404) | yes (merge commit) | no (fix not in `v1`) | **no — 500** |
-| Liveness/readiness split | yes | yes (unit + Docker runtime) | yes (merge commit) | yes for `v1` | health 200; blog route still fails |
+| Blog SSR route | yes | yes (unit + built-server 200/404) | yes (merge commit) | yes, in `v1.1.3` | **yes — 200 for a real slug, 404 for an unknown slug** |
+| Liveness/readiness split | yes | yes (unit + Docker runtime) | yes (merge commit) | yes, in `v1.1.3` | `/api/live` 200, `/api/health` 200 |
 | Deployment test gate | yes | yes (contract) | yes (merge commit) | n/a | n/a |
 | Post-deploy health/login/blog/404 checks | yes | yes (contract; local route check) | yes (contract) | no | no |
 | Image provenance labels | yes | contract test | yes (contract) | no | no |
 | Semantic tag validation | yes | yes (unit + workflow contract) | yes (merge commit) | no | no |
 | Tag-to-commit enforcement | yes | yes (workflow contract) | yes (merge commit) | no | no |
 | ECR retention preflight | yes | yes (policy unit + live read-only) | yes (merge commit) | applied out-of-band, not yet reconciled by the stack | preflight `safe: true`; preview reports 0 expiring |
-| CloudWatch alarms + metric filter | yes | CDK 27/27 | yes (merge commit) | **yes, separate stack** | four alarms and one filter present; all `OK` at read-back |
+| CloudWatch alarms + metric filter | yes | CDK 37/37 (27/27 at the 2026-10-25 review) | yes (merge commit) | **yes, separate stack** | four alarms and one filter present in production; `Request5xx` and its filter exist in code but are not deployed |
 | SNS notification action | yes | CDK tests | yes (merge commit) | **yes** | alarm history records a successful SNS action; inbox receipt not independently verified |
 | CDK ADRs and runbooks | yes | documentation review | n/a | n/a | n/a |
 | Least-privilege deploy role | proposal only | n/a | no | no | role has `AdministratorAccess` |
-| Rollback Drill 2 | runbook only | n/a | no | no | not executed |
+| Rollback Drill 2 | yes (runbook + fixes) | n/a | no | **drill account only** | executed twice 2026-10-26; run 2 rolled back automatically. Production still lacks `Request5xx` |
 
 ## Local verification performed on the hardening branch
 
@@ -139,6 +167,15 @@ of the monitoring deployment.
   names are `UniBudgetStack-Monitoring-Target5xx`, `-UnhealthyTargets`,
   `-LiveTaskCount`, and `-StructuredErrors`, matching the live SNS topic
   policy's `UniBudgetStack-*` source condition.
+
+Re-verified on 2026-10-26 against the current worktree:
+
+- `npx vitest run` with no database: **277 passed, 6 skipped** in 31 files.
+- With `BUDGET_TEST_DATABASE_URL` and `MIGRATION_TEST_DATABASE_URL` pointing at
+  a disposable PostgreSQL 16 container on `127.0.0.1:5433` (not production, not
+  Supabase): **283 passed, 0 failed**. The migration suite applies the project's
+  migrations to throwaway databases it creates and drops itself.
+- `hello-cdk` Jest: **37 passed, 0 failed** across three suites.
 - CloudWatch-to-SNS delivery was exercised with a manual `StructuredErrors`
   state transition. Alarm history at 2026-10-25 17:34:53 UTC records
   "Successfully executed action
@@ -151,12 +188,12 @@ These are separate states. A later state is not implied by an earlier one.
 
 | State | Current status |
 | --- | --- |
-| 1. Code complete | Yes for the application, health, structured logging, workflow, separate monitoring stack, lifecycle, provenance, ADR, and runbook work. Logging and the SSR blog-route fix are merged in `a919b96`; the monitoring-ownership reconciliation and workflow cleanup are prepared in the worktree but not yet committed. IAM least privilege, CloudFront custom-domain TLS, and Rollback Drill 2 remain proposals/runbooks, not completed external changes. |
-| 2. Locally tested | Yes, on the release candidate (`a919b96` + the prepared reconciliation): **242 Vitest tests in 28 files**, including both PostgreSQL integration suites against a disposable local container, with a 30-second timeout for the migration subprocess tests (the 5-second default times out on this Windows host; CI runs them green on Linux). **27 CDK tests**, `astro check` 0 errors/0 warnings/0 hints, ESLint clean, Astro build, workflow YAML parse, CDK synthesis for both stacks, Docker build, and container route checks. The blog route file has 11 tests, including the 404-status assertion. |
+| 1. Code complete | Yes for the application, health, structured logging, workflow, separate monitoring stack, lifecycle, provenance, ADR, and runbook work. Logging and the SSR blog-route fix are merged in `a919b96`; the monitoring-ownership reconciliation and workflow cleanup are prepared in the worktree but not yet committed. IAM least privilege and CloudFront custom-domain TLS remain proposals, not completed external changes; Rollback Drill 2 was executed in the drill account on 2026-10-26 (see below). |
+| 2. Locally tested | Yes. The release candidate (`a919b96` + the prepared reconciliation) ran at **242 Vitest tests in 28 files**; the current worktree runs **283 tests in 31 files**: 277 pass with no database, and all 283 pass when both PostgreSQL integration suites run against a disposable PostgreSQL 16 container (verified 2026-10-26 on this Windows host at the default timeout). **37 CDK tests** now (27 at the 2026-10-25 review), `astro check` 0 errors/0 warnings/0 hints, ESLint clean, Astro build, workflow YAML parse, CDK synthesis for both stacks, Docker build, and container route checks. The blog route file has 11 tests, including the 404-status assertion. |
 | 3. CI verified | **Yes** for merge commit `a919b96`: CI run [40218210613](https://github.com/ShauryaKarmakar/cs4421-astro-blog/actions/runs/40218210613) completed successfully (all 19 steps). |
 | 4. Ready for deployment | **No** for the application. See the explicit blockers below. The separate monitoring stack is already deployed. |
 | 5. Deployed | **No** for the application; production still runs the legacy `v1` image. **Yes** for `UniBudgetStack-Monitoring`. |
-| 6. Verified in production | **No** for the application: `/blog/<slug>` still returns 500. **Partially yes** for monitoring: four alarms and one filter exist, all `OK`, and CloudWatch executed the SNS action; inbox receipt and threshold crossing are not proven. |
+| 6. Verified in production | **Yes for the routes checked on 2026-10-26**: `/api/health` 200, `/login` 200, `/blog/first-post` 200, unknown slug 404, running image `v1.1.3`. **Partially yes** for monitoring: four alarms and one filter exist, all `OK`, and CloudWatch executed the SNS action; inbox receipt is not proven, and no threshold crossing has occurred in production (one was observed in the drill account on 2026-10-26). |
 
 ## Release candidate
 
@@ -202,8 +239,9 @@ and the remaining release blockers are cleared.
    with `LiveTaskCount` after it produced a false alarm; all four alarms are
    `OK`. The application stack no longer defines alarm or metric-filter
    resources; its test asserts zero. The old `UniBudgetStack` change set
-   `unibudget-monitoring-20261025-1` remains blocked and must not be executed,
-   because it would recreate the resources now owned by the monitoring stack.
+   `unibudget-monitoring-20261025-1` no longer exists: a read-only check on
+   2026-10-26 lists no change sets for any production stack, so there is nothing
+   to execute and nothing to clean up.
    Do not use the `Deploy` workflow for monitoring: it builds and pushes an
    image and runs migrations.
 5. **Choose the release commit and tag.** Create annotated tag `v1.1.0` on the
@@ -218,8 +256,9 @@ and the remaining release blockers are cleared.
 7. **Verify in production.** Confirm the new digest and the blog route over
    CloudFront, and confirm a test alarm notification if the SNS path was
    enabled.
-8. **Run Rollback Drill 2 in the isolated drill account** before claiming
-   rollback readiness.
+8. **Re-check rollback readiness after the production release.** Rollback
+   Drill 2 ran on 2026-10-26; the deployment alarm it validated reaches
+   production with the monitoring stack and this release.
 
 ## Release plan (prepared, not executed)
 
@@ -239,7 +278,7 @@ Target: **`v1.1.0`**, annotated, on the merge commit of this reconciliation on
    `git push origin v1.1.0`. The workflow rejects a lightweight tag, a
    non-semver tag, or a tag that does not point at the checked-out `GITHUB_SHA`.
 3. Dispatch `Deploy` from `main` at that SHA with `imageTag=v1.1.0`,
-   `desiredCount=1`, `bootstrapOnly=false`, `recoveryPlanVerified=true`, and a
+   `desiredCount=1`, `recoveryPlanVerified=true`, and a
    verified Supabase recovery-point reference and UTC timestamp. The workflow
    runs tests before the image build, checks ECR retention before the push,
    records the digest and OCI labels, runs the migration before the rollout,
@@ -257,7 +296,8 @@ the running digest. `v1.1.0` adds no migration, so rolling back is
 schema-compatible; the smoke-test rows for blog 200/404 will return to the
 legacy 500 until the fix is redeployed. If the workflow fails after pushing the
 image, the immutable `v1.1.0` tag cannot be reused; publish `v1.1.1`. Rollback
-Drill 2 remains a separate, unexecuted activity in the isolated account.
+Drill 2 was a separate activity in the isolated account and is recorded in
+[rollback-drill-2.md](rollback-drill-2.md) §7–§8.
 
 ## Release evidence checklist
 
@@ -279,15 +319,17 @@ blank; a green build alone proves none of the deployed behavior.
 | Unknown blog slug | `/blog/definitely-not-a-post` over CloudFront | HTTP 404, not 500 and not 200 |
 | Alarms | `aws cloudwatch describe-alarms --alarm-name-prefix UniBudgetStack-Monitoring-` | Four alarms present, all `OK` at steady state, with `AlarmActions` set |
 | Notification | SNS subscription ARN and alarm-history action evidence | Subscription confirmed (`SubscriptionArn` is an ARN); alarm history shows `Successfully executed action arn:aws:sns:...`; inbox receipt noted separately |
-| Rollback | Rollback Drill 2 result in the isolated account | All acceptance criteria have observed values |
+| Rollback | Rollback Drill 2 result in the isolated account (`rollback-drill-2.md` §8) | Run 2 meets every criterion except verified notification delivery |
 
 ## Explicit blockers
 
-- The production image still returns **500** for `/blog/<slug>`.
+- Resolved on 2026-10-25: production now runs `v1.1.3` and `/blog/<slug>` returns 200 with an unknown slug returning 404 (re-verified read-only 2026-10-26).
 - Monitoring is deployed but not fully proven: CloudWatch executed the SNS
-  action, but inbox receipt was not independently verified and no real metric
-  threshold crossing has been observed. The initial `RunningTaskCount` alarm
-  produced a false alarm and was replaced with `LiveTaskCount`.
+  action, but inbox receipt was not independently verified. The 2026-10-26 drill
+  did produce a real threshold crossing in the drill account, but that run's
+  evidence captured no `Action` history item, so notification delivery from it
+  is unverified too. The initial `RunningTaskCount` alarm produced a false alarm
+  and was replaced with `LiveTaskCount`.
 - CloudFront still enforces only `TLSv1` on the default certificate. A modern
   policy requires a custom domain and ACM certificate; the separate proposal
   is prepared but not applied.
@@ -295,7 +337,8 @@ blank; a green build alone proves none of the deployed behavior.
   task-definition, and IAM-policy modifications; it was not executed and
   remains a blocker for any application-stack update.
 - `UniBudgetStack` no longer defines alarms or a metric filter; its test
-  asserts that absence. The old change set would recreate duplicates if
+  asserts that absence. It does reference one alarm **by name** in the ECS
+  deployment configuration. The old change set would recreate duplicates if
   executed.
 - The deployment role still has `AdministratorAccess`; least privilege is a
   proposal, not applied.
@@ -304,16 +347,22 @@ blank; a green build alone proves none of the deployed behavior.
   authenticated GitHub session (the API returns 401). The application workflow
   no longer uses it, so it is not a release blocker; it is only needed for a
   manual monitoring-stack deployment.
-- Rollback Drill 2 has not been executed.
-- The hardening branch is merged and merge-commit CI passed; no application
-  release tag, image, migration, or application deployment has been produced
-  yet. The separate monitoring stack is deployed.
+- Production has not been redeployed with the drill fixes: `Request5xx`, the
+  `status >= 500` filter, and the ECS deployment alarm exist in code and in the
+  drill account only. Applying them needs the monitoring stack first, then a
+  normal deployment.
+- The monitoring-ownership reconciliation has not been released: production
+  runs `v1.1.3` from `a919b96`, whose image predates it. The separate monitoring
+  stack is deployed, but from the four-alarm version.
 
 ## Operations deliberately not performed and separate writes
 
 No application deployment, image push, release tag, migration, IAM change,
 GitHub secret/variable change, DNS/certificate change, or rollback drill was
-performed while preparing this document. The authorized AWS writes were the
+performed while preparing this document. (A rollback drill was later executed
+in the separate drill account on 2026-10-26; see
+[Rollback drill execution](#rollback-drill-execution-2026-10-26). Production
+was still not touched.) The authorized AWS writes were the
 ECR lifecycle-policy replacement, the SNS topic/policy/subscription setup, and
 the separate monitoring-stack deployment on 2026-10-25. Change sets
 `unibudget-monitoring-20261025-2` and `-3` were executed; they created four
@@ -321,9 +370,10 @@ alarms and one metric filter, then replaced the false-alarm
 `RunningTaskCount` alarm with `LiveTaskCount`. A manual `StructuredErrors`
 state transition was used for CloudWatch-to-SNS evidence and was restored to
 `OK`; no production error was generated. The application stack was not
-updated: its last update remains 2026-10-24 22:59:56 UTC, and ECS stayed at
-desired 1 / running 1. The old no-execute change set
-`unibudget-monitoring-20261025-1` remains `AVAILABLE` and unexecuted. The
+updated at that time: its last update remains 2026-10-24 22:59:56 UTC, and ECS
+stayed at desired 1 / running 1. The no-execute change set
+`unibudget-monitoring-20261025-1` was never executed, and it was gone by the
+2026-10-26 check that listed no change sets for any production stack. The
 CloudFront TLS proposal in [cloudfront-tls-plan.md](cloudfront-tls-plan.md) is
 documentation only; the distribution still reports `TLSv1` and the default
 certificate. The PR #40 merge and these AWS changes were performed separately

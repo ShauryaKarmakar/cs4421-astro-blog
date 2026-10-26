@@ -104,11 +104,13 @@ application stack with its normal context, and the monitoring stack with
 
 ## 6. Operational leftovers and risks
 
-- **Do not execute `unibudget-monitoring-20261025-1`.** This change set on
-  `UniBudgetStack` is `CREATE_COMPLETE` / `AVAILABLE`, created 2026-10-25
-  16:02:21 UTC, with 12 changes including the four alarms and the metric filter
-  that now belong to the monitoring stack. Executing it would recreate the
-  duplicate alarms and doubled metric. Deletion requires separate approval.
+- **`unibudget-monitoring-20261025-1` was never executed, and no longer
+exists.** This change set on `UniBudgetStack` was created 2026-10-25 16:02:21
+  UTC with 12 changes, including the four alarms and the metric filter that now
+  belong to the monitoring stack; executing it would have recreated the
+  duplicate alarms and doubled metric. A read-only check on 2026-10-26 lists no
+  change sets for `UniBudgetStack`, `UniBudgetStack-Monitoring`, or
+  `StaticSiteStack`, so the caution is historical.
 - The deploy workflow previously passed `-c alarmTopicArn` to the application
   stack. Those two lines and the now-unused `ALARM_TOPIC_ARN` job variable were
   removed; the workflow no longer references the context at all. The monitoring
