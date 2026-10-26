@@ -21,9 +21,9 @@ copy-pasteable Logs Insights queries are in [logging.md](logging.md).
 
 | Item | Code | Deployed | Notifying |
 | --- | --- | --- | --- |
-| Five alarms | Yes (`UniBudgetStack-Monitoring`) | Four deployed on 2026-10-25; `Request5xx` added on 2026-10-26 and not yet deployed to production | CloudWatch executed the SNS action successfully; inbox receipt not independently verified |
+| Five alarms | Yes (`UniBudgetStack-Monitoring`) | Five deployed: four on 2026-10-25, `Request5xx` on 2026-10-26 | CloudWatch executed the SNS action successfully; inbox receipt not independently verified |
 | `level=error` metric filter | Yes, in the monitoring stack | **Yes** — one filter on `/unibudget/ecs/application` | n/a |
-| `status>=500` metric filter | Yes, in the monitoring stack | Added 2026-10-26; verified in the drill account, not yet deployed to production | Drives `Request5xx` |
+| `status>=500` metric filter | Yes, in the monitoring stack | Added 2026-10-26 and verified in the drill account, then deployed to production | Drives `Request5xx` |
 | SNS topic + subscription | Created; policy applied | **Yes** — topic exists | **Confirmed** — one email subscription has a real ARN |
 
 The stack deliberately imports a topic ARN instead of creating a topic. This
@@ -66,7 +66,7 @@ receipt, and it does not prove metric-threshold evaluation.
 | Log group | `/unibudget/ecs/application` exists, 7-day retention |
 | Metric filter | on that log group, pattern `{ $.level = "error" }`, metric `UniBudget/Application` `StructuredErrorCount` |
 | Filter vs emitted logs | matched: live log stream contains `{"level":"info","event":"http.request",…,"requestId":…}` records, so `level` is a top-level JSON field |
-| Alarms | exactly four `UniBudgetStack-Monitoring-*`, all `OK`, each with `unibudget-production-alarms` as its action (a fifth, `Request5xx`, was added on 2026-10-26) |
+| Alarms | exactly five `UniBudgetStack-Monitoring-*`, all `OK`, each with `unibudget-production-alarms` as its action (`Request5xx` was added on 2026-10-26) |
 | Subscription | one email subscription with a real `SubscriptionArn` (confirmed) |
 | Notification delivery | CloudWatch executed the SNS action for a manual `StructuredErrors` transition on 2026-10-25 17:34 UTC; inbox receipt still unverified |
 
@@ -208,7 +208,7 @@ on this topic, and only for alarms whose ARN begins with the
 ```
 
 The JSON was validated locally and the live topic policy was read back with the
-same principal, action, resource, and source-ARN condition. The four deployed
+same principal, action, resource, and source-ARN condition. The five deployed
 physical alarm ARNs all begin with
 `arn:aws:cloudwatch:us-east-1:556890483680:alarm:UniBudgetStack-Monitoring-`,
 so they match the `UniBudgetStack-*` condition. If the stack is renamed, update

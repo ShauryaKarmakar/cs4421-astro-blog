@@ -20,7 +20,7 @@ definitions and the notification topic are in [alarms.md](alarms.md).
 | Target health | one target, `healthy` |
 | Log group | `/unibudget/ecs/application`, 7-day retention |
 | Metric filter | `{ $.level = "error" }` → `UniBudget/Application` `StructuredErrorCount` |
-| Alarms | `UniBudgetStack-Monitoring-Target5xx`, `UniBudgetStack-Monitoring-UnhealthyTargets`, `UniBudgetStack-Monitoring-LiveTaskCount`, `UniBudgetStack-Monitoring-StructuredErrors`, `UniBudgetStack-Monitoring-Request5xx`; the first four were `OK` at review time, each with the SNS topic action. `Request5xx` was added on 2026-10-26 and was not yet deployed to production |
+| Alarms | `UniBudgetStack-Monitoring-Target5xx`, `UniBudgetStack-Monitoring-UnhealthyTargets`, `UniBudgetStack-Monitoring-LiveTaskCount`, `UniBudgetStack-Monitoring-StructuredErrors`, `UniBudgetStack-Monitoring-Request5xx`; all five are deployed and `OK`, each with the SNS topic action. `Request5xx` was added on 2026-10-26 and deployed to production the same day as the ECS deployment alarm |
 | Notification | one confirmed email subscription on `unibudget-production-alarms` |
 | Static site | independent bucket `staticsitestack-…` and distribution `E2JVO3G1WG2Q2T`; not part of this application |
 
@@ -184,5 +184,6 @@ email for a brief failure should not be expected.
   the running `v1.1.3` image. The deployed middleware source rethrows unhandled
   errors into the framework's error path, and that path has not been observed
   in production, so the presence of `X-Request-Id` on a live 500 is unverified.
-- None of this is deployed to the production account yet. `Request5xx` and the
-deployment-alarm wiring exist in the drill account only.
+- The wiring is deployed to production (2026-10-26), but the alarm has not yet
+failed a real production rollout; the only deployment it has stopped was in the
+drill account. Inbox receipt remains unverified.

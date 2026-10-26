@@ -23,8 +23,8 @@ drill account; §5 records it.
 | 1 | Automated container CD (tests, Docker build, immutable ECR push, ECS rollout) | **Met** by reusing `.github/workflows/deploy.yml`; tests now run in that workflow |
 | 2 | Semantic versioning distinct from immutable image identity | **Partially met** — workflow now enforces semver tags and records digests; `v1.1.0` is the release candidate; no semver-tagged image exists yet and `v1.0.0`/`v1` remain unreconciled |
 | 3 | ECS application reachable through the load balancer, `/api/health` works | **Met**, verified through CloudFront. Production runs `v1.1.3`; on 2026-10-26 `/api/health` and `/login` returned 200, `/blog/first-post` 200, and an unknown slug 404 |
-| 4 | CloudWatch observability: structured logs, Logs Insights, metrics and alarms | **Met for deployment; partial for proof** — logs and Logs Insights verified; four alarms and an error metric filter are deployed in production and `OK`; CloudWatch executed the SNS action, but inbox receipt is unproven. A real threshold crossing was observed in the drill account on 2026-10-26 (§5) |
-| 5 | Rollback Drill 2 | **Met in the drill account on 2026-10-26** — run 1 partial (manual rollback), run 2 automatic (alarm detected in 33 s, rollback in 3 m 10 s). Production is not yet redeployed with the fix; see [rollback-drill-2.md](rollback-drill-2.md) §7–§8 |
+| 4 | CloudWatch observability: structured logs, Logs Insights, metrics and alarms | **Met for deployment; partial for proof** — logs and Logs Insights verified; five alarms and two metric filters are deployed in production and `OK` since 2026-10-26, including the `Request5xx` deployment alarm; CloudWatch executed the SNS action, but inbox receipt is unproven. A real threshold crossing was observed in the drill account on 2026-10-26 (§5), and the alarm now evaluates production traffic |
+| 5 | Rollback Drill 2 | **Met in the drill account on 2026-10-26** — run 1 partial (manual rollback), run 2 automatic (alarm detected in 33 s, rollback in 3 m 10 s). The same wiring is deployed in production but has not yet failed a real rollout there; see [rollback-drill-2.md](rollback-drill-2.md) §7–§8 |
 | 6 | Outage lifecycle with a blameless post-mortem | **Met** — template, plus a real blameless post-mortem of run 1 in [rollback-drill-2-result.md](rollback-drill-2-result.md); run 2 exercised the corrected path |
 | 7 | Release strategy comparison and the strategy actually used | **Met** — ECS rolling with an ECS deployment alarm (the circuit breaker stays enabled but needs three failed launches at this service size) |
 | 8 | Evidence mapping | This document |
@@ -299,13 +299,15 @@ CloudWatch. This is a gap in evidence, not a claim that logging is broken.
 ### Alarms
 
 **Deployed in a separate stack.** `hello-cdk/lib/monitoring-stack.ts` defines
-four alarms plus one JSON metric filter and imports the existing log group,
+five alarms plus two JSON metric filters and imports the existing log group,
 target-group dimensions, and operator-managed SNS topic. It never creates a
 topic, log group, ECS, ECR, or IAM resource. Change set
 `unibudget-monitoring-20261025-2` created the stack; `-3` replaced the initial
 `RunningTaskCount` alarm with `LiveTaskCount` after the former produced a false
-alarm because it requires Container Insights. The final stack is
-`UPDATE_COMPLETE`, all four alarms are `OK`, and the metric filter is present.
+alarm because it requires Container Insights. On 2026-10-26 the `status >= 500`
+filter and the `Request5xx` alarm were added, and `UniBudgetStack` was updated so
+the ECS service watches that alarm as its deployment alarm. The stack is
+`UPDATE_COMPLETE`, all five alarms are `OK`, and both filters are present.
 `UniBudgetStack` defines no alarm or metric-filter resources; its test asserts
 zero, so an application release cannot recreate the duplicates.
 
@@ -431,8 +433,9 @@ Status: **run 1 partial; run 2 pass except unverified notification delivery.**
 
 ### Detection
 
-- The four deployed CloudWatch alarms, ALB target health, and the synthetic
-  `/api/health` probe are the primary signals.
+- The five deployed CloudWatch alarms (including `Request5xx`, which also gates
+  each deployment), ALB target health, and the synthetic `/api/health` probe are
+  the primary signals.
 - Logs Insights on `/unibudget/ecs/application` for `"level":"error"` finds
   application-side failures; the deployed metric filter feeds
   `StructuredErrorCount` and alerts above five events in ten minutes.
@@ -547,8 +550,8 @@ was applied).
 | Container CD | `.github/workflows/deploy.yml`, `Dockerfile`, ECR repository, ECS service | Tests step added; CI suite; running `v1`; deployment `COMPLETED` | Met (manual dispatch by design) |
 | Semver | Semver workflow gate; immutable ECR tags; OCI version/revision labels; digest capture | `v1` tag + digest observed; `v1.1.0` candidate not released; provenance labels not in any image yet | Partial |
 | Availability | CloudFront → ALB → `/api/health`; target group probe; post-deploy blog 200 and unknown-slug 404 checks | Production `/api/health` 200, `/login` 200, `/blog/first-post` 200, unknown slug 404 (read-only check 2026-10-26); service 1/1 | Met |
-| Observability | `/unibudget/ecs/application`, JSON error logs, separate four-alarm + metric-filter stack, SNS action | Logs Insights executed (10 rows; 0 structured errors); CDK synth + **27/27** tests; monitoring stack `UPDATE_COMPLETE`; four alarms `OK`; alarm history shows successful SNS action | Met for deployment; inbox receipt unproven, threshold crossing shown only in the drill account |
-| Rollback Drill 2 | Deployment alarm + circuit breaker + procedure above | Executed twice on 2026-10-26 in the drill account; run 2 rolled back automatically (`drill-evidence-retest/`) | **Met in the drill account**; production redeploy outstanding |
+| Observability | `/unibudget/ecs/application`, JSON error logs, separate five-alarm + two-filter stack, SNS action | Logs Insights executed (10 rows; 0 structured errors); CDK + **37/37** tests; monitoring stack `UPDATE_COMPLETE`; five alarms `OK`; alarm history shows successful SNS action | Met for deployment; inbox receipt unproven, threshold crossing shown only in the drill account |
+| Rollback Drill 2 | Deployment alarm + circuit breaker + procedure above | Executed twice on 2026-10-26 in the drill account, then deployed to production; run 2 rolled back automatically (`drill-evidence-retest/`) | **Met in the drill account**; not yet exercised by a failed production rollout |
 | Outage lifecycle | Detection/triage/mitigation/post-mortem above | Documentation only | Met as documentation |
 | Release strategies | Rolling + circuit breaker in CDK | CDK synthesis tests; service config | Met |
 | Evidence | This document | Read-only AWS calls on 2026-10-25 | Met |

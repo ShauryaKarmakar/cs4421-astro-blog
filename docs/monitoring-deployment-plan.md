@@ -1,9 +1,31 @@
 # Monitoring deployment record and ownership
 
-Date: 2026-10-25
+Date: 2026-10-25, updated 2026-10-26
 Status: **Deployed — `UniBudgetStack-Monitoring` owns the alarms and metric
-filter.** The earlier "Path A" proposal (inline alarms in `UniBudgetStack`) is
-closed.
+filters, and `UniBudgetStack` watches `Request5xx` as its deployment alarm.**
+The earlier "Path A" proposal (inline alarms in `UniBudgetStack`) is closed.
+
+## Deployment update — 2026-10-26
+
+Rollback Drill 2 run 1 showed that none of the four deployed alarms could see a
+failed readiness probe. The fix (ADR 0006, ADR 0009) added a second metric filter
+on `$.status >= 500` (`UniBudget/Application/Http5xxCount`) and a fifth alarm,
+`UniBudgetStack-Monitoring-Request5xx` (`> 0` over one minute).
+
+Both were deployed on 2026-10-26 in this order:
+
+1. `UniBudgetStack-Monitoring` was updated first; the change set contained only
+the new filter, the new alarm, and `CDKMetadata`, and completed
+   `UPDATE_COMPLETE` with five alarms `OK`.
+2. `UniBudgetStack` was then deployed with `-c deploymentAlarmName=UniBudgetStack-Monitoring-Request5xx`.
+   The diff showed the deployment configuration change and no ECS, ECR, IAM, or
+   monitoring-resource change; the service now reports the alarm in
+   `deploymentConfiguration.alarms`.
+
+The production `Request5xx` alarm is deployed and evaluating but has not yet
+stopped a failed production rollout. Rollback Drill 2 remains the only evidence
+that it does (run 2, isolated account `293633790894`). The sections below record
+the original 2026-10-25 review and remain accurate as history.
 
 ## 1. Decision
 
@@ -31,8 +53,15 @@ changed by this review.
 
 After this review, `v1.1.3` was released on 2026-10-25 19:37 UTC. The
 application stack is `UPDATE_COMPLETE`, the service runs task definition
-`:4` with image `v1.1.3` at desired 1 / running 1, and all four alarms remain
+`:4` with image `v1.1.3` at desired 1 / running 1, and all four alarms remained
 `OK`. The monitoring stack itself was not changed by the release.
+
+**Updated 2026-10-26:** the rollback-drill fixes were deployed to production in
+the required order. The monitoring stack gained `Application5xxMetricFilter` and
+`Request5xx` (five alarms, two filters), and `UniBudgetStack` was updated so the
+ECS service watches `Request5xx` as its deployment alarm. Both stacks report no
+`cdk diff`; the task definition is still `:4` with image `v1.1.3`. The alarm
+tables below describe the 2026-10-25 review state.
 
 Deployed alarms (from the live stack template):
 

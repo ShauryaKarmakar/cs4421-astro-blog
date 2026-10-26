@@ -2,10 +2,12 @@
 
 - Status: Accepted
 - Date: 2026-10-25
-- Deployment status (2026-10-26): implemented and verified end to end in the
-disposable drill account. **Not yet applied to the production stack** — the
-production service still runs without a deployment alarm until the monitoring
-stack and then the application stack are deployed.
+- Deployment status (2026-10-26): implemented, verified end to end in the
+disposable drill account, then deployed to production in the required order —
+the monitoring stack added `Request5xx` and its metric filter, and the
+application stack attached the alarm to the ECS service with rollback enabled.
+The alarm now evaluates production traffic; it has not yet failed a real
+production rollout.
 
 ## Context
 

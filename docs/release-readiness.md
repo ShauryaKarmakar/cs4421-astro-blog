@@ -24,12 +24,13 @@ deployed, and verified in production. A green local suite is not a deployment.
 | `/blog/first-post` | **200** with the expected title |
 | Unknown blog slug | **404** |
 | `/` | **200** |
-| CloudWatch alarms | four deployed in `UniBudgetStack-Monitoring`, all `OK`; a fifth, `Request5xx`, is in code and in the drill account only |
+| CloudWatch alarms | **five** deployed in `UniBudgetStack-Monitoring` since 2026-10-26, all `OK` |
 | SNS topic | `unibudget-production-alarms`, one confirmed email subscription |
 | CloudFront | `E30KFH719MS9Z0`, `Deployed`, HTTPS redirect, one ALB origin, cache disabled, viewer TLS `TLSv1` |
 | ECR images | four manifests: `v1.1.3`, `v1`, and two untagged |
 | ECR retention | tagged `*`/10 and untagged/10; preflight passed before the push |
-| Rollback Drill 2 | **executed twice on 2026-10-26** in drill account `293633790894`: run 1 partial (manual rollback), run 2 automatic. Production unchanged; see below |
+| Rollback Drill 2 | **executed twice on 2026-10-26** in drill account `293633790894`: run 1 partial (manual rollback), run 2 automatic. Its fixes were then deployed to production; see below |
+| Deployment alarm | `UniBudgetStack-Monitoring-Request5xx` attached to the ECS service with `rollback: true`, `enable: true` (applied 2026-10-26); circuit breaker still enabled |
 
 The run built and pushed the immutable image, completed the one-off migration
 task, deployed the stack, waited for a stable service, verified the running
@@ -59,11 +60,33 @@ back on `ALARM`. Evidence: `drill-evidence/` (run 1) and
 `drill-evidence-retest/` (run 2); the record is
 [rollback-drill-2.md](rollback-drill-2.md).
 
-Production still runs the previous monitoring stack: four alarms, no
-`Request5xx`, and a service with no deployment alarm. Applying the fix needs the
-monitoring stack deployed first, then a normal deployment. The workflow verifies
-the alarm before it builds or migrates, passes it to the stack, and fails the
-release if the service is not watching it.
+## Deployment to production (2026-10-26)
+
+The drill fixes were applied to the production account in the required order,
+with a read-only `cdk diff` inspected before each write.
+
+1. `UniBudgetStack-Monitoring` was updated first: the diff was exactly two
+   additions (`Application5xxMetricFilter` and `Request5xxAlarm`), and the stack
+   reached `UPDATE_COMPLETE` in 13 s. `Request5xx` measures
+   `UniBudget/Application` `Http5xxCount` as `Sum > 0` over one 60 s period,
+   with `notBreaching` and the production SNS topic as its action.
+2. `UniBudgetStack` was updated second: the diff was one change, `.Alarms`
+   added to the ECS service's `DeploymentConfiguration`. No task-definition,
+   image, ECR, network, or IAM change was proposed. The stack reached
+   `UPDATE_COMPLETE` in 51 s, and the task definition stayed at revision `:4`.
+
+After the rollout, `describe-services` reports `desired 1 / running 1`, primary
+rollout `COMPLETED`, and `deploymentConfiguration.alarms` listing
+`UniBudgetStack-Monitoring-Request5xx` with `rollback: true` and `enable: true`,
+alongside the enabled circuit breaker. A repeat `cdk diff` of both stacks
+reports no differences. The alarm evaluates real production data and is `OK`
+with a 0-valued datapoint.
+
+What is still unproven: the alarm has not yet failed a real production rollout
+(the drill account is the only place that happened), and no alarm email has
+been confirmed in the inbox. The workflow verifies the alarm before it builds
+or migrates, passes it to the stack, and fails the release if the service is not
+watching it.
 
 ## Release history and immutable tags
 
@@ -126,13 +149,14 @@ is confirmed in the dashboard.
 | Image provenance labels and digest | yes | yes | yes | running digest equals ECR digest |
 | Semantic and annotated tag enforcement | yes | yes | yes | `v1.1.3` on `c9eb373` |
 | ECR retention preflight | yes | yes | applied out-of-band | preflight passed; four manifests retained |
-| CloudWatch alarms + metric filter | yes | yes | **yes, separate stack** | four alarms and one filter present, all `OK`; `Request5xx` and the `status >= 500` filter exist in code and were drilled, but are not deployed |
+| CloudWatch alarms + metric filter | yes | yes | **yes, separate stack** | five alarms and two filters present since 2026-10-26, all `OK` |
+| ECS deployment alarm | yes | CDK + workflow contract tests | **yes** | `Request5xx` attached with `rollback: true`; the alarm has not yet failed a production rollout |
 | SNS notification action | yes | CDK tests | **yes** | alarm history records a successful action; SNS reported one delivered and zero failed notifications for the 2026-10-26 test publish; inbox receipt still not independently verified |
 | Request correlation release gate | yes | yes (workflow contract + shell execution tests) | **no** — ships with the next release | `X-Request-Id` observed on the live `/login` response, 2026-10-26; the deployment gate itself has not run against production |
 | Scheduled off-site backup | yes (workflow) | workflow contract tests | **yes — enabled, runs verified** | `BACKUP_DATABASE_URL` and `BACKUP_ENABLED=true` configured 2026-10-26; runs 40312355540 and 40313112911 stored both objects and matched their manifest checksums |
 | Least-privilege deploy role | proposal only | no | no | role still has `AdministratorAccess` |
 | CloudFront modern TLS | proposal only | no | no | minimum viewer TLS is `TLSv1` |
-| Rollback Drill 2 | yes (runbook + fixes) | no | **drill account only** | executed twice 2026-10-26; run 2 rolled back automatically. Production still lacks `Request5xx` |
+| Rollback Drill 2 | yes (runbook + fixes) | no | **drill account exercised; fixes deployed** | executed twice 2026-10-26; run 2 rolled back automatically. The same wiring is now live in production, where it has not yet been exercised |
 
 ## Remaining risks and open work
 
@@ -155,11 +179,11 @@ is confirmed in the dashboard.
    2026-10-26 publish; neither proves the message reached the mailbox rather
    than spam or quarantine. A real crossing was observed in the drill account
    on 2026-10-26, but that run captured no `Action` history item.
-6. **The drilled rollback fix is not in production.** Rollback Drill 2 ran twice
-   in the drill account on 2026-10-26 and run 2 rolled back automatically on
-   `Request5xx`; production still has four alarms and no deployment alarm, so a
-   bad rollout there is unprotected until the monitoring stack and an
-   application release are deployed in that order. See
+6. **The deployment alarm is live but not yet exercised in production.**
+   `Request5xx` is attached to the service with rollback enabled and evaluates
+   real traffic, but the only failed rollout it has stopped was in the drill
+   account on 2026-10-26. A future release that fails its readiness probe is
+   the first production test of that path. See
    [rollback-drill-2.md](rollback-drill-2.md).
 7. **Supabase has no managed backup or PITR on the Free Plan.** A manual dump
    and restore proof are required before each migration until the project is

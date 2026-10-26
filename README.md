@@ -133,17 +133,19 @@ policy is release-safe, and the SNS topic and email subscription are confirmed.
 
 Rollback Drill 2 was executed twice on 2026-10-26 in an isolated account; the
 second run rolled back automatically on the `Request5xx` deployment alarm. That
-alarm is not deployed to production yet — see
-[rollback-drill-2.md](./docs/rollback-drill-2.md).
+alarm and its `status >= 500` metric filter were deployed to production later
+the same day, and the ECS service now watches the alarm as its deployment
+alarm — see [rollback-drill-2.md](./docs/rollback-drill-2.md).
 
-The four alarms and the metric filter are deployed in the separate
+The five alarms and the two metric filters are deployed in the separate
 `UniBudgetStack-Monitoring` stack, which imports the existing log group and SNS
-topic and did not update ECS, ECR, IAM, or the SNS topic. All four alarms are
-`OK`; CloudWatch executed the SNS action successfully. Inbox receipt and a real
-metric threshold crossing remain unproven. The application stack no longer
+topic and did not update ECS, ECR, IAM, or the SNS topic. All five alarms are
+`OK`; CloudWatch executed the SNS action successfully. Inbox receipt, and a real
+metric threshold crossing in production, remain unproven: `Request5xx` is
+deployed and the service watches it, but no production rollout has tripped it. The application stack no longer
 defines alarms or a metric filter; its test asserts that absence. The older
 `UniBudgetStack` change set remains blocked because it also proposed
 task-definition and IAM changes and would recreate the monitoring resources if
 executed; see [alarms.md](docs/alarms.md). The readiness document lists the
-remaining blockers (application release, IAM scope, CloudFront TLS, and the
-unexecuted rollback drill).
+remaining blockers (IAM scope, CloudFront TLS, and an unexercised production
+rollback).

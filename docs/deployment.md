@@ -214,13 +214,14 @@ can be traced to the exact request. It never logs credentials, SQL, query
 strings, session tokens, or user data. See [logging.md](logging.md) for the
 field schema and the alarm-to-log workflow.
 
-The separate `UniBudgetStack-Monitoring` stack has a metric filter for
-`{ $.level = "error" }` and four deployed alarms. `UniBudgetStack` no longer
-defines any alarm or metric filter; its test asserts that absence, so an
-application release cannot recreate the duplicate filter:
+The separate `UniBudgetStack-Monitoring` stack has two metric filters —
+`{ $.level = "error" }` and `$.status >= 500` — and five deployed alarms.
+`UniBudgetStack` no longer defines any alarm or metric filter; its test asserts
+that absence, so an application release cannot recreate the duplicate filter:
 
 | Alarm | Meaning and first diagnostic |
 | --- | --- |
+| Request 5xx | Any request record with `status >= 500` in one minute. This is the deployment alarm the ECS service watches, so it fails a bad rollout. First check `/api/health` and the latest error/access records for the same `requestId`. |
 | Target 5xx | More than five target 5xx responses in ten minutes; inspect the latest error events and the running digest. |
 | Unhealthy targets | A target is failing `/api/health`; check database reachability, role assertion, and task logs. |
 | Live tasks | Fewer live tasks than the desired count for three minutes; inspect ECS events, task stop reasons, and capacity. `LiveTaskCount` does not require Container Insights. |
@@ -228,11 +229,15 @@ application release cannot recreate the duplicate filter:
 
 Alarm notifications use the existing SNS topic with a confirmed subscription.
 The monitoring stack imports the topic and does not create or subscribe one.
-As of 2026-10-25 the stack is `UPDATE_COMPLETE`, the four alarms are `OK`, and
-CloudWatch alarm history records a successful SNS action from a manual state
-transition. Inbox receipt was not independently verified, and no real metric
-threshold crossing has been observed **in production** — one was observed in
-the disposable drill account on 2026-10-26 (see the drill record). Do not
+As of 2026-10-26 both stacks are `UPDATE_COMPLETE`: the monitoring stack owns
+all five alarms and two filters, and the application stack's service watches
+`UniBudgetStack-Monitoring-Request5xx` as its deployment alarm (read back from
+`deploymentConfiguration.alarms`). All five alarms are `OK`, and CloudWatch
+alarm history records a successful SNS action from a manual state transition.
+Inbox receipt was not independently verified, and no real metric threshold
+crossing has been observed **in production** — one was observed in the
+disposable drill account on 2026-10-26 (see the drill record), so the production
+rollback path is configured rather than exercised. Do not
 deploy the application stack to
 add alarms: its earlier monitoring change set is blocked by ECS/ECR coupling
 and would recreate resources now owned by the monitoring stack. The exact
@@ -1044,20 +1049,22 @@ Rollback Drill 2 was **executed twice on 2026-10-26** in disposable account
 `Request5xx` deployment alarm was added — rolled back automatically and reached
 steady state on the baseline 3 m 10 s after the broken revision was applied
 (the alarm itself fired 33 s after the first failed probe). Production has not
-been through a drill, and the fixes are not deployed there yet. The record is in [rollback-drill-2.md](rollback-drill-2.md). Do not
-use the production account to create an intentional outage.
+been through a drill of its own. The record is in
+[rollback-drill-2.md](rollback-drill-2.md). Do not use the production account to
+create an intentional outage.
 
-**Production deployment decision (2026-10-26): not performed.** Getting the
-protection into production needs two writes, in this order: deploy
-`UniBudgetStack-Monitoring` so `Request5xx` and its metric filter exist, then
-release the application so the service is updated with
-`-c deploymentAlarmName=UniBudgetStack-Monitoring-Request5xx`. Neither was done
-in this pass. The fix lives on `chore/monitoring-alarm-identity`, which is 31
-commits behind `origin/main` and not merged, so a release dispatched from
-`main` would not contain it, while releasing this branch first needs a merge and
-a new tag; the monitoring stack must be deployed from the same reviewed code.
-Until both steps run, production keeps four alarms, one metric filter, and a
-service with no deployment alarm, and the defence documents say so.
+**Production deployment (2026-10-26): performed, in the required order.**
+`UniBudgetStack-Monitoring` was deployed first, adding `Application5xxMetricFilter`
+and `Request5xxAlarm` and nothing else (13 s, `UPDATE_COMPLETE`). `UniBudgetStack`
+was deployed second with `-c deploymentAlarmName=UniBudgetStack-Monitoring-Request5xx`;
+the only change in the `cdk diff` was `.Alarms` on the ECS service's
+`DeploymentConfiguration`, and the task definition stayed at revision `:4`
+(51 s, `UPDATE_COMPLETE`). The service now reports the alarm with
+`rollback: true` and `enable: true`; a repeat `cdk diff` of both stacks reports
+no differences, and the live routes were re-checked afterwards
+(`/api/health` 200, `/login` 200, `/blog/first-post` 200, unknown slug 404).
+Still unproven: a failed production rollout has not exercised the alarm, and no
+alarm email has been confirmed.
 
 The ECR lifecycle policy in `hello-cdk/lib/cdk-stack.ts` keeps ten tagged
 images and ten untagged images. On 2026-10-25 the live repository still used
