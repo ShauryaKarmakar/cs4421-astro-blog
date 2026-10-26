@@ -49,11 +49,11 @@ create it. Record these before scheduling the drill:
 
 | Item | Value |
 | --- | --- |
-| Drill account ID | — |
-| Region | — |
-| Approved budget and drill window | — |
-| Operator identity | — |
-| Confirmation the drill role cannot reach production | — |
+| Drill account ID | **Pending** — no separate account exists yet, and the deployment account is not in an AWS Organization |
+| Region | `us-east-1` (proposed; matches production, change it before provisioning if the budget or latency target says otherwise) |
+| Approved budget and drill window | **Not approved** — proposed ceiling is $80 and a two-day window |
+| Operator identity | `ShauryaKarmakar` |
+| Confirmation the drill role cannot reach production | **Pending** — test with `aws sts get-caller-identity` and a denied production call from the drill role before starting |
 
 Minimum footprint: one small Fargate task, an ALB, a CloudFront distribution,
 an ECR repository, a disposable database, and outbound networking. The ALB and
@@ -71,6 +71,13 @@ Provisioning sequence:
 3. Push the baseline image to the drill ECR repository and record its digest.
 4. Record the baseline task definition, rollout state and route statuses
    before introducing the failing image.
+
+Run the drill from a fork (or a separate repository `production` environment)
+with drill-scoped `AWS_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION` and
+`SUPABASE_HOST` values. `deploy.yml` asserts that the assumed account equals
+`AWS_ACCOUNT_ID` and verifies the running digest, so repointing this
+repository's production variables at the drill account would disable the
+production deploy gate. Never change them for a drill.
 
 ## 2. Prerequisites
 

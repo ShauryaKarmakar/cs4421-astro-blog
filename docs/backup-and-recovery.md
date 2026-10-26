@@ -55,7 +55,7 @@ Verified read-only on 2026-10-26:
 | Versioning | Enabled |
 | Public access | Fully blocked (`BlockPublicAcls`, `IgnorePublicAcls`, `BlockPublicPolicy`, `RestrictPublicBuckets`) |
 | Lifecycle rule | `expire-manual-db-backups`, enabled, expires objects after 90 days |
-| Existing point | `20261025T184503Z`: `manifest.json` (1,273 bytes) and `unibudget-20261025T184503Z.dump` (308,302 bytes) |
+| Latest verified point | `20261026T111100Z`: `manifest.json` (249 bytes) and `unibudget-20261026T111100Z.dump` (308,343 bytes), SHA-256 `ef24bde4…3efbc9` |
 
 Access is limited to the AWS identities that can read that bucket; the bucket
 is not public. Do not copy a dump to a laptop, chat, ticket or unencrypted
@@ -126,10 +126,25 @@ approve scheduled runs promptly or give backups their own role trusted for the
 default branch. The role also still carries `AdministratorAccess`; the backup
 needs only read/write access to this bucket.
 
-Status: **implemented, not yet enabled**. No secret or `BACKUP_ENABLED`
-variable is configured, so no scheduled backup has run. After enabling it,
-confirm the first run produced both objects, then record the date and cadence
-here.
+Status: **enabled and verified**, 2026-10-26. `BACKUP_DATABASE_URL` is set as
+a repository secret and `BACKUP_ENABLED=true` as a repository variable. The
+`production` environment has no protection rules, required reviewers or
+deployment branch policy, so scheduled runs proceed without approval.
+
+Two manual runs were verified against production:
+
+| Run | Prefix | Result |
+| --- | --- | --- |
+| [40312355540](https://github.com/ShauryaKarmakar/cs4421-astro-blog/actions/runs/40312355540) | `20261026T110512Z` | Dump and manifest stored; archive listable; checksum matched. Manifest version field was wrong (see below) |
+| [40313112911](https://github.com/ShauryaKarmakar/cs4421-astro-blog/actions/runs/40313112911) | `20261026T111100Z` | Dump and manifest stored; 308,343 bytes; SHA-256 and byte size match the manifest; 7 tables and 8 extensions in the TOC; `pgDumpVersion` `17.11` |
+
+A local rehearsal exposed the connection defect before the first workflow run:
+libpq does not expand a URI supplied through `PGDATABASE`, so the job connected
+to a local socket. The first workflow run then exposed a second defect:
+`awk '{print $NF}'` recorded the Debian package suffix as the version. Both
+were fixed and the second run verified the corrected manifest. The schedule is
+daily at 02:15 UTC; a missed or failed run leaves the newest stored object as
+the recovery point, so check the run history before a release.
 
 ## 5. Integrity verification
 
@@ -219,7 +234,7 @@ commitments:
 
 | Objective | Status |
 | --- | --- |
-| RPO | **Decision required.** Practical exposure equals the time since the last manual dump; there is no continuous recovery |
+| RPO | **Decision required.** The daily 02:15 UTC schedule bounds exposure to about one day when every run succeeds; a failed or skipped run extends it to the age of the newest stored object. There is no continuous recovery |
 | RTO | **Decision required and unmeasured.** The restore has been rehearsed into a disposable container, but no timed end-to-end restoration into production has been performed |
 
 Proposed starting targets, to be confirmed or replaced by the project owner:
@@ -252,6 +267,8 @@ disposable environment first.
 | The dump/restore commands work end to end | **Rehearsed 2026-10-26 with synthetic data**: pg_dump custom format, `pg_restore --exit-on-error` returned 0, 7 public tables, 4 ledger rows, matching user/transaction/budget counts, 0 orphaned rows and an unchanged expense total. No production data was used |
 | The production dump has been restored with these exact commands | **Not yet** — doing so would require the approved backup, which was not downloaded for this revision |
 | Restore into the live project | **Not performed** |
+| Scheduled workflow runs against production | **Verified 2026-10-26** (runs 40312355540 and 40313112911): both objects present, SHA-256 and byte size match the manifest, archive lists 7 tables and 8 extensions |
+| The scheduled job's TLS | **Verified 2026-10-26**: `verify-full` against the Supabase CA; the job refuses an unencrypted or unversioned bucket and deletes its credential files on exit |
 | RPO/RTO | **Not agreed** |
 | Current Supabase plan and backup settings | **Not re-verified** — requires dashboard access |
 

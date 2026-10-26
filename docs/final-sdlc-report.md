@@ -38,10 +38,13 @@ deployed, and observed in production. A green local suite is not a deployment.
   bucket properties, the restore procedure and the open RPO/RTO decision.
   No new restore was performed against production; the documented commands
   were rehearsed with synthetic data.
-- **2026-10-26, backup automation:** `backup-database.yml` adds a daily
-  02:15 UTC logical dump with checksum verification. It is disabled until
-  `BACKUP_ENABLED=true` and still needs the `BACKUP_DATABASE_URL` secret, so
-  no scheduled backup has run.
+- **2026-10-26, backup automation:** `backup-database.yml` runs a daily
+  02:15 UTC logical dump with `verify-full` TLS, checksum verification and an
+  S3 read-back check. It is enabled (`BACKUP_ENABLED=true`, `BACKUP_DATABASE_URL`
+  secret) and two manual production runs were verified: both objects stored,
+  archived checksum matching the manifest, 7 tables and 8 extensions listable.
+  A broken connection method and a wrong manifest version were found and fixed
+  during verification; the RPO remains undecided.
 - **Rollback Drill 2 remains unexecuted.** No isolated account has been
   provisioned, so no drill result exists.
 
