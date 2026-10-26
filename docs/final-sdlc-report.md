@@ -36,7 +36,12 @@ deployed, and observed in production. A green local suite is not a deployment.
 - **2026-10-26, recovery:** a backup and recovery runbook
   ([backup-and-recovery.md](backup-and-recovery.md)) records the verified
   bucket properties, the restore procedure and the open RPO/RTO decision.
-  No new restore was performed.
+  No new restore was performed against production; the documented commands
+  were rehearsed with synthetic data.
+- **2026-10-26, backup automation:** `backup-database.yml` adds a daily
+  02:15 UTC logical dump with checksum verification. It is disabled until
+  `BACKUP_ENABLED=true` and still needs the `BACKUP_DATABASE_URL` secret, so
+  no scheduled backup has run.
 - **Rollback Drill 2 remains unexecuted.** No isolated account has been
   provisioned, so no drill result exists.
 

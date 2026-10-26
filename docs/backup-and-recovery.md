@@ -90,6 +90,38 @@ uploaded object's checksum before discarding the local copy.
 Do not commit the dump, the manifest, the connection string or the checksum
 file. The repository ignores `*.dump`, `*.dump.gz` and `/backups/`.
 
+## 4a. Automated schedule
+
+`.github/workflows/backup-database.yml` performs the same logical dump on a
+daily schedule (02:15 UTC) and on manual dispatch, then uploads the dump and
+manifest under the project prefix above.
+
+| Setting | Kind | Purpose |
+| --- | --- | --- |
+| `BACKUP_DATABASE_URL` | secret | Connection string used by `pg_dump`; never logged |
+| `AWS_ACCOUNT_ID` | variable | Account the OIDC role must resolve to |
+| `AWS_DEPLOY_ROLE_ARN` | variable | Existing deploy role, assumed with OIDC |
+| `BACKUP_ENABLED` | variable | Set to `true` to let the schedule run; manual dispatch works without it |
+| `AWS_REGION` | variable (optional) | Defaults to `us-east-1` |
+
+The job validates the account, bucket encryption and bucket versioning before
+dumping, rejects an archive `pg_restore` cannot list, compares the uploaded
+object's SHA-256 with the local dump, and never prints the connection string.
+It fails closed when the secret is absent.
+
+The job runs in the `production` GitHub environment because the deploy role's
+trust policy only accepts that OIDC subject. It therefore inherits the
+environment's protection rules: if required reviewers are configured, a
+scheduled run waits for approval instead of backing up unattended. Either
+approve scheduled runs promptly or give backups their own role trusted for the
+default branch. The role also still carries `AdministratorAccess`; the backup
+needs only read/write access to this bucket.
+
+Status: **implemented, not yet enabled**. No secret or `BACKUP_ENABLED`
+variable is configured, so no scheduled backup has run. After enabling it,
+confirm the first run produced both objects, then record the date and cadence
+here.
+
 ## 5. Integrity verification
 
 Before a restore:
