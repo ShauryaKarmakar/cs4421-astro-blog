@@ -42,6 +42,36 @@ Use a separate AWS account with:
 Record the drill account ID, region, stack name, and domain. Do not record
 secret values.
 
+## 1a. Account hand-off checklist
+
+Creating the drill account is an owner action; nothing in this repository can
+create it. Record these before scheduling the drill:
+
+| Item | Value |
+| --- | --- |
+| Drill account ID | — |
+| Region | — |
+| Approved budget and drill window | — |
+| Operator identity | — |
+| Confirmation the drill role cannot reach production | — |
+
+Minimum footprint: one small Fargate task, an ALB, a CloudFront distribution,
+an ECR repository, a disposable database, and outbound networking. The ALB and
+NAT gateway dominate the cost; expect roughly **$40–$80 for a two-day drill**
+depending on region and networking choice. Confirm with the AWS pricing
+calculator before approval and destroy the stack afterwards. This is an
+estimate, not a quote.
+
+Provisioning sequence:
+
+1. Create the account and an IAM role the deploy workflow can assume, trusted
+   only for the drill repository/environment.
+2. Bootstrap CDK, then deploy the stack with `bootstrapOnly=true` or
+   `desiredCount=0`.
+3. Push the baseline image to the drill ECR repository and record its digest.
+4. Record the baseline task definition, rollout state and route statuses
+   before introducing the failing image.
+
 ## 2. Prerequisites
 
 1. Approve the drill account and its cost/time budget.

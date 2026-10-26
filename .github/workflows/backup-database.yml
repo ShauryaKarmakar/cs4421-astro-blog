@@ -1,0 +1,148 @@
+name: Back up Database
+
+# Daily logical backup of the production database into the encrypted,
+# versioned, private bucket described in docs/backup-and-recovery.md.
+#
+# Scheduled runs stay disabled until the repository variable BACKUP_ENABLED is
+# "true", so the workflow does not fail every night while the credential secret
+# is still being configured. A manual dispatch always runs and fails closed when
+# configuration is missing.
+
+on:
+  schedule:
+    - cron: '15 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: unibudget-database-backup
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+
+  # Hard-coded so a changed repository variable cannot redirect a dump to
+  # another bucket or label it under a different project.
+  BACKUP_BUCKET: unibudget-db-backups-556890483680-us-east-1
+  SUPABASE_PROJECT_REF: fkrtduyzpwfrbhooxvpr
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'workflow_dispatch' || vars.BACKUP_ENABLED == 'true'
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: unibudget-database-backup
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate Backup Target and Credentials
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BACKUP_DATABASE_URL:-}" ]; then
+            echo "::error::The BACKUP_DATABASE_URL repository secret is not configured."
+            exit 1
+          fi
+          for name in AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name must be configured before running a backup."
+              exit 1
+            fi
+          done
+
+          caller_account=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$caller_account" != "$AWS_ACCOUNT_ID" ]; then
+            echo "::error::The assumed role is in account $caller_account, not AWS_ACCOUNT_ID."
+            exit 1
+          fi
+
+          encryption=$(aws s3api get-bucket-encryption \
+            --bucket "$BACKUP_BUCKET" \
+            --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' \
+            --output text)
+          if [ -z "$encryption" ] || [ "$encryption" = "None" ]; then
+            echo "::error::$BACKUP_BUCKET is not encrypted; refusing to upload a dump."
+            exit 1
+          fi
+
+          versioning=$(aws s3api get-bucket-versioning \
+            --bucket "$BACKUP_BUCKET" \
+            --query Status --output text)
+          if [ "$versioning" != "Enabled" ]; then
+            echo "::error::$BACKUP_BUCKET does not have versioning enabled; refusing to upload a dump."
+            exit 1
+          fi
+
+          echo "Backup target validated: $encryption, versioning $versioning."
+
+      - name: Dump, Verify and Upload
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+          prefix="supabase/${SUPABASE_PROJECT_REF}/${timestamp}"
+          dump_name="unibudget-${timestamp}.dump"
+          work="$RUNNER_TEMP/backup"
+          mkdir -p "$work"
+
+          # PGDATABASE carries the connection string into the container through
+          # the environment, so the URL never appears in docker arguments or in
+          # the job log.
+          export PGDATABASE="$BACKUP_DATABASE_URL"
+          docker run --rm \
+            -e PGDATABASE \
+            -v "$work:/backup" \
+            postgres:17 \
+            pg_dump --format=custom --no-owner --no-privileges \
+              --file="/backup/${dump_name}"
+
+          # An archive that cannot be listed is not a recovery point.
+          docker run --rm -v "$work:/backup" postgres:17 \
+            pg_restore --list "/backup/${dump_name}" >/dev/null
+
+          checksum=$(sha256sum "$work/$dump_name" | awk '{print $1}')
+          bytes=$(wc -c < "$work/$dump_name" | tr -d ' ')
+          pg_version=$(docker run --rm postgres:17 pg_dump --version | awk '{print $NF}')
+
+          cat > "$work/manifest.json" <<EOF
+          {
+            "projectRef": "${SUPABASE_PROJECT_REF}",
+            "timestamp": "${timestamp}",
+            "sha256": "${checksum}",
+            "bytes": ${bytes},
+            "pgDumpVersion": "${pg_version}",
+            "operator": "github-actions:${GITHUB_RUN_ID}"
+          }
+          EOF
+
+          aws s3 cp "$work/$dump_name" \
+            "s3://$BACKUP_BUCKET/$prefix/$dump_name" --only-show-errors
+          aws s3 cp "$work/manifest.json" \
+            "s3://$BACKUP_BUCKET/$prefix/manifest.json" --only-show-errors
+
+          # Read the object back and compare the checksum, so a truncated or
+          # interrupted upload cannot be mistaken for a recovery point.
+          remote_checksum=$(aws s3 cp \
+            "s3://$BACKUP_BUCKET/$prefix/$dump_name" - | sha256sum | awk '{print $1}')
+          if [ "$remote_checksum" != "$checksum" ]; then
+            echo "::error::The uploaded dump does not match its SHA-256; treat this backup as failed."
+            exit 1
+          fi
+
+          rm -f "$work/$dump_name" "$work/manifest.json"
+          echo "Backup stored for $timestamp (${bytes} bytes, SHA-256 verified)."
