@@ -168,7 +168,10 @@ jobs:
 
           checksum=$(sha256sum "$work/$dump_name" | awk '{print $1}')
           bytes=$(wc -c < "$work/$dump_name" | tr -d ' ')
-          pg_version=$(docker run --rm postgres:17 pg_dump --version | awk '{print $NF}')
+          # `pg_dump --version` ends with the Debian package suffix, so take
+          # only the PostgreSQL version number.
+          pg_version=$(docker run --rm postgres:17 pg_dump --version \
+            | sed -E 's/^pg_dump \(PostgreSQL\) ([0-9.]+).*/\1/')
 
           cat > "$work/manifest.json" <<EOF
           {
