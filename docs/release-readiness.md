@@ -101,7 +101,7 @@ is confirmed in the dashboard.
 | CloudWatch alarms + metric filter | yes | yes | **yes, separate stack** | four alarms present, all `OK` |
 | SNS notification action | yes | CDK tests | **yes** | alarm history records a successful action; SNS reported one delivered and zero failed notifications for the 2026-10-26 test publish; inbox receipt still not independently verified |
 | Request correlation release gate | yes | yes (workflow contract + shell execution tests) | **no** — ships with the next release | `X-Request-Id` observed on the live `/login` response, 2026-10-26; the deployment gate itself has not run against production |
-| Scheduled off-site backup | yes (workflow) | workflow contract tests | **no** — not enabled | requires `BACKUP_DATABASE_URL` and `BACKUP_ENABLED=true`; no scheduled run yet |
+| Scheduled off-site backup | yes (workflow) | workflow contract tests | **yes — enabled, runs verified** | `BACKUP_DATABASE_URL` and `BACKUP_ENABLED=true` configured 2026-10-26; runs 40312355540 and 40313112911 stored both objects and matched their manifest checksums |
 | Least-privilege deploy role | proposal only | no | no | role still has `AdministratorAccess` |
 | CloudFront modern TLS | proposal only | no | no | minimum viewer TLS is `TLSv1` |
 | Rollback Drill 2 | runbook only | no | no | not executed |
@@ -133,8 +133,9 @@ is confirmed in the dashboard.
    upgraded or a managed backup strategy is adopted. Provider documentation
    checked 2026-10-26 confirms free-tier projects receive neither daily backups
    nor PITR; the live plan itself was not re-checked. A scheduled off-site
-   backup workflow now exists but has not run: it needs the
-   `BACKUP_DATABASE_URL` secret and `BACKUP_ENABLED=true`. See
+   backup job now runs daily at 02:15 UTC and was verified against production
+   on 2026-10-26; the RPO is still undecided, and the newest stored object is
+   only as recent as the last successful run. See
    [backup-and-recovery.md](backup-and-recovery.md).
 8. **The request-correlation gate is implemented but unreleased.** The current
    production image predates it, so a future release is the first run that can
