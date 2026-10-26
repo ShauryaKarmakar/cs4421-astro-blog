@@ -1119,3 +1119,34 @@ jobs:
           fi
           echo "Unknown blog slugs correctly return 404."
           echo "Application is healthy at $health_url"
+
+      - name: Verify Request Correlation Through CloudFront
+        if: inputs.bootstrapOnly != true
+        env:
+          APPLICATION_URL: ${{ steps.outputs.outputs.application_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APPLICATION_URL" ] || ! [[ "$APPLICATION_URL" =~ ^https://[a-z0-9]+\.cloudfront\.net$ ]]; then
+            echo "::error::The stack did not provide an HTTPS CloudFront application URL."
+            exit 1
+          fi
+
+          # Correlation is part of the operability contract: an operator must be
+          # able to quote a request id from a response when reporting a failure.
+          # The value itself is never printed; it is only checked against the
+          # middleware's format, so a missing or malformed header fails closed.
+          headers=$(curl --silent --show-error --dump-header - --output /dev/null \
+            --retry 12 --retry-delay 5 --retry-connrefused \
+            "${APPLICATION_URL%/}/login")
+          request_id=$(printf '%s\n' "$headers" | tr -d '\r' \
+            | awk 'tolower($1) == "x-request-id:" {print $2}' | tail -n 1)
+
+          if [ -z "$request_id" ]; then
+            echo "::error::The application did not return an X-Request-Id header through CloudFront."
+            exit 1
+          fi
+          if ! [[ "$request_id" =~ ^[A-Za-z0-9._-]{8,64}$ ]]; then
+            echo "::error::The X-Request-Id header is malformed; expected 8-64 characters from [A-Za-z0-9._-]."
+            exit 1
+          fi
+          echo "The login response carries a well-formed X-Request-Id header."
