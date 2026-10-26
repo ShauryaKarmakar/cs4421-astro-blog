@@ -92,6 +92,11 @@ describe('scheduled database backup workflow', () => {
     expect(workflow).toContain('sha256sum');
     expect(workflow).toContain('"sha256": "${checksum}"');
     expect(workflow).toContain('"bytes": ${bytes}');
+    // `pg_dump --version` ends in the Debian package suffix; the manifest must
+    // record the server-compatible version, not that suffix.
+    expect(workflow).toContain('pg_dump --version \\');
+    expect(workflow).toContain('"pgDumpVersion": "${pg_version}"');
+    expect(workflow).not.toContain('pg_dump --version | awk');
     expect(workflow).toContain(
       '"operator": "github-actions:${GITHUB_RUN_ID}"',
     );
