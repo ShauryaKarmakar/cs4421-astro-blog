@@ -498,9 +498,9 @@ Action items (owner, due date):
   defect fixed in `src/pages/blog/[...slug].astro`.
 - Mitigation: the SSR fix is merged (PR #40, `4ce73f9`), and structured
   logging is merged at `a919b96`; CI run 40218210613 passed on that commit.
-  Deploy an image built from that commit plus the reviewed monitoring
-  reconciliation under the next release tag. Until then, the route remains
-  broken in `v1`.
+  The fix was released as `v1.1.3` (merge `c9eb373`, deploy run 40226648129);
+  the route now returns 200 through CloudFront. Rolling back to the legacy
+  `v1` image in task definition `:3` would restore the 500.
 - Contributing factors: no route-level smoke test in the post-deploy check
   (only `/api/health` and `/login`); no alarm on 5xx; the release predates the
   fix.

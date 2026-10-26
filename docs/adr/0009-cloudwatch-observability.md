@@ -62,9 +62,10 @@ implementation at the same time. They now live in the dedicated
   changing its signature, and concurrent requests cannot mix context.
 - The record schema is deliberately limited to the fields above. No
   credentials, cookies, authorization headers, query strings, request bodies,
-  SQL text, user ids, email addresses, or amounts are logged. Paths are capped
-  at 512 characters. Error messages and stack traces are never serialized; only
-  the error class name and a five-character SQLSTATE-style code are kept.
+  SQL text, user ids, email addresses, or amounts are logged. Paths are
+  truncated to 512 characters, with `...` appended when truncation occurs.
+  Error messages and stack traces are never serialized; only the error class
+  name and a five-character SQLSTATE-style code are kept.
 - One CloudWatch Logs metric filter matches `{ $.level = "error" }` and
   publishes `UniBudget/Application/StructuredErrorCount`. Because access
   records use `warn` for 5xx, one failed request increments the metric once

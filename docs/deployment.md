@@ -634,11 +634,15 @@ verified inventory and the staged migration plan.
 
 ## Release versions, image identity, and provenance
 
-The next release candidate is **`v1.1.0`**: the changes fix the blog route and
-add operational hardening without a breaking API or schema change. Do not
-automatically use `v2.0.0`. The existing `v1.0.0` Git tag is not moved; the
-deployed `v1` image is a legacy artifact whose exact source commit cannot be
-proven because it predates the OCI labels.
+**`v1.1.3` is released and verified in production** on `c9eb373`, with image
+digest `sha256:168b26f5…`, task definition `:4`, and `/api/health`, `/login`,
+and `/blog/first-post` returning 200 over CloudFront. It fixed the blog route
+and added operational hardening without a breaking API or schema change.
+Earlier failed attempts left immutable tags `v1.1.0`, `v1.1.1`, and `v1.1.2`
+with no ECR image; do not reuse those tags. The next release uses the next
+patch version. The existing `v1.0.0` tag is not moved; the deployed `v1` image
+is a legacy artifact whose exact source commit cannot be proven because it
+predates the OCI labels.
 
 - `imageTag` must be `vMAJOR.MINOR.PATCH` with an optional prerelease suffix.
   The workflow rejects `v1`, `latest`, branch names, and commit SHAs before it
@@ -652,8 +656,8 @@ proven because it predates the OCI labels.
 - The ECR lifecycle policy retains ten tagged and ten untagged manifests. Do
   not add a second SHA tag per release; it would consume the retention window.
 
-No `v1.1.0` tag or image has been created. See
-[release-readiness.md](release-readiness.md) for the exact release sequence.
+See [release-readiness.md](release-readiness.md) for the release history,
+recovery point, evidence, and remaining risks.
 
 ## Subsequent deployments
 
@@ -709,7 +713,11 @@ and then:
    `/blog/<slug>` entry
    from `src/content/blog`, and an unknown blog slug through the CloudFront
    HTTPS URL. The blog checks exist because health and login can be green while
-   a dynamic content route still fails or returns its not-found page as 200.
+   a dynamic content route still fails or returns its not-found page as 200;
+10. verifies that the `/login` response carries a well-formed `X-Request-Id`
+   header, so a release cannot ship without request correlation. The header is
+   a correlation mechanism, not proof of success: the status checks above stay
+   in force independently.
 
 The workflow requires an explicit `desiredCount` between `1` and `10`; it has
 no default and never silently scales the service to zero. A run also requires
@@ -1002,6 +1010,9 @@ Before adopting existing data or running the first production migration:
 Recovery is a restore of the whole database, not a reverse SQL script. A
 restore also rolls back the migration ledger and any application data written
 after the restore point; communicate that data-loss window before proceeding.
+The storage layout, restore procedure, post-restore checks, approvals and the
+open RPO/RTO decision are in
+[backup-and-recovery.md](backup-and-recovery.md).
 
 ## Rollback and its limits
 

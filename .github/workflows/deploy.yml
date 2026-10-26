@@ -54,6 +54,26 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 60
+    # The deployment must run the same PostgreSQL-backed suite as CI before it
+    # builds an image or changes AWS. Without these, the integration suites fail
+    # closed and the release stops at the test gate.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: unibudget_test_admin
+          POSTGRES_PASSWORD: integration-only-password
+          POSTGRES_DB: unibudget_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U unibudget_test_admin -d unibudget_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      BUDGET_TEST_DATABASE_URL: postgresql://unibudget_test_admin:integration-only-password@127.0.0.1:5432/unibudget_test
+      MIGRATION_TEST_DATABASE_URL: postgresql://unibudget_test_admin:integration-only-password@127.0.0.1:5432/unibudget_test
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -387,8 +407,10 @@ jobs:
             echo "::error::CloudFront uses ACM certificate $acm_certificate; this deployment must use the AWS-managed default certificate."
             exit 1
           fi
-          require_config "origin count" "$(jq -r '.Origins | length' <<<"$config")" "1"
-          require_config "origin" "$(jq -r '.Origins[0].DomainName' <<<"$config")" "$LOAD_BALANCER_DNS"
+          # Origins is a {Quantity, Items} object, not an array; count and
+          # index Items so the gate checks the distribution, not its keys.
+          require_config "origin count" "$(jq -r '.Origins.Items | length' <<<"$config")" "1"
+          require_config "origin" "$(jq -r '.Origins.Items[0].DomainName' <<<"$config")" "$LOAD_BALANCER_DNS"
           require_config "viewer protocol" "$(jq -r '.DefaultCacheBehavior.ViewerProtocolPolicy' <<<"$config")" "redirect-to-https"
           # CachingDisabled: no user-specific HTML, session, or API response may
           # be stored at the edge. AllViewer forwards every header (including
@@ -1121,3 +1143,33 @@ jobs:
           fi
           echo "Unknown blog slugs correctly return 404."
           echo "Application is healthy at $health_url"
+
+      - name: Verify Request Correlation Through CloudFront
+        env:
+          APPLICATION_URL: ${{ steps.outputs.outputs.application_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APPLICATION_URL" ] || ! [[ "$APPLICATION_URL" =~ ^https://[a-z0-9]+\.cloudfront\.net$ ]]; then
+            echo "::error::The stack did not provide an HTTPS CloudFront application URL."
+            exit 1
+          fi
+
+          # Correlation is part of the operability contract: an operator must be
+          # able to quote a request id from a response when reporting a failure.
+          # The value itself is never printed; it is only checked against the
+          # middleware's format, so a missing or malformed header fails closed.
+          headers=$(curl --silent --show-error --dump-header - --output /dev/null \
+            --retry 12 --retry-delay 5 --retry-connrefused \
+            "${APPLICATION_URL%/}/login")
+          request_id=$(printf '%s\n' "$headers" | tr -d '\r' \
+            | awk 'tolower($1) == "x-request-id:" {print $2}' | tail -n 1)
+
+          if [ -z "$request_id" ]; then
+            echo "::error::The application did not return an X-Request-Id header through CloudFront."
+            exit 1
+          fi
+          if ! [[ "$request_id" =~ ^[A-Za-z0-9._-]{8,64}$ ]]; then
+            echo "::error::The X-Request-Id header is malformed; expected 8-64 characters from [A-Za-z0-9._-]."
+            exit 1
+          fi
+          echo "The login response carries a well-formed X-Request-Id header."

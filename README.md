@@ -121,12 +121,15 @@ deliberately.
 - [Architecture decision records](./docs/adr/README.md)
 - [IAM least-privilege assessment](./docs/iam-least-privilege.md)
 - [Rollback Drill 2 runbook](./docs/rollback-drill-2.md)
+- [Backup and recovery runbook](./docs/backup-and-recovery.md)
 - [Week 7 deliverables and evidence](./docs/week7-deliverables.md)
 
-Production runs image `v1.1.3` (task definition revision 4). On 2026-10-26
-`/api/health` and `/login` returned 200, `/blog/first-post` returned 200, and an
-unknown slug returned 404 through CloudFront. The ECR lifecycle policy is
-release-safe, and the SNS topic and email subscription are confirmed.
+Production runs image `v1.1.3` (task definition revision 4), which includes the
+blog SSR fix and request correlation; the next release also gains the deployment
+gate that fails the run when `X-Request-Id` is missing from `/login`. On
+2026-10-26 `/api/health` and `/login` returned 200, `/blog/first-post` returned
+200, and an unknown slug returned 404 through CloudFront. The ECR lifecycle
+policy is release-safe, and the SNS topic and email subscription are confirmed.
 
 Rollback Drill 2 was executed twice on 2026-10-26 in an isolated account; the
 second run rolled back automatically on the `Request5xx` deployment alarm. That

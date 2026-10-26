@@ -21,6 +21,25 @@ stack uses fixed resource names (`UniBudgetStack`, `/unibudget/ecs/application`,
 `unibudget/supabase/*`), so a second stack in the same account is not a valid
 isolated environment.
 
+## 0. What this drill must prove
+
+1. A task that fails its liveness check is detected by ECS without an operator
+   touching the service.
+2. The deployment circuit breaker stops the failed rollout and restores the
+   last `COMPLETED` task definition automatically.
+3. The restored service serves the baseline image digest, not the drill image.
+4. `/api/health`, `/login`, a real `/blog/<slug>` and an unknown slug return
+   their expected statuses after recovery.
+5. Recovery time and traffic errors during the window are recorded in UTC.
+
+It must also show that the release workflow's post-deploy gate would reject a
+rollback that silently left the old task set running: the gate requires the
+primary deployment to be `COMPLETED` and the running task digest to match the
+image this run published.
+
+This drill is **not** a database recovery exercise, a blue/green switch, or a
+validation of a production change. It runs only in the isolated account below.
+
 ## 1. Environment isolation
 
 Use a separate AWS account with:
@@ -35,6 +54,42 @@ Use a separate AWS account with:
 Record the drill account ID, region, stack name, and domain. Do not record
 secret values.
 
+## 1a. Account hand-off checklist
+
+Creating the drill account is an owner action; nothing in this repository can
+create it. Record these before scheduling the drill:
+
+| Item | Value |
+| --- | --- |
+| Drill account ID | **Pending** — no separate account exists yet, and the deployment account is not in an AWS Organization |
+| Region | `us-east-1` (proposed; matches production, change it before provisioning if the budget or latency target says otherwise) |
+| Approved budget and drill window | **Not approved** — proposed ceiling is $80 and a two-day window |
+| Operator identity | `ShauryaKarmakar` |
+| Confirmation the drill role cannot reach production | **Pending** — test with `aws sts get-caller-identity` and a denied production call from the drill role before starting |
+
+Minimum footprint: one small Fargate task, an ALB, a CloudFront distribution,
+an ECR repository, a disposable database, and outbound networking. The ALB and
+NAT gateway dominate the cost; expect roughly **$40–$80 for a two-day drill**
+depending on region and networking choice. Confirm with the AWS pricing
+calculator before approval and destroy the stack afterwards. This is an
+estimate, not a quote.
+
+Provisioning sequence:
+
+1. Create the account and an IAM role the deploy workflow can assume, trusted
+   only for the drill repository/environment.
+2. Bootstrap CDK, then deploy the stack with `bootstrapOnly=true` or
+   `desiredCount=0`.
+3. Push the baseline image to the drill ECR repository and record its digest.
+4. Record the baseline task definition, rollout state and route statuses
+   before introducing the failing image.
+
+Run the drill from a fork (or a separate repository `production` environment)
+with drill-scoped `AWS_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION` and
+`SUPABASE_HOST` values. `deploy.yml` asserts that the assumed account equals
+`AWS_ACCOUNT_ID` and verifies the running digest, so repointing this
+repository's production variables at the drill account would disable the
+production deploy gate. Never change them for a drill.
 **Deviation used on 2026-10-26:** the drill database was the stack's own RDS
 instance instead of a Supabase project. That instance is created by
 `UniBudgetStack` specifically for the drill, holds no production data, and is
@@ -147,6 +202,11 @@ service. Availability was protected throughout — the public endpoint returned
 If any row is blank, the drill is not complete. Do not infer timings from
 CloudWatch retention or reconstruct them later. The 2026-10-26 run has one
 failed row and one unmeasured row, so it does not meet these criteria.
+
+The rollback-detection logic is covered by workflow contract tests in
+`tests/deployWorkflow.test.ts` (primary rollout must be `COMPLETED`, running
+digest must match the published image). Those tests protect the gate from
+silently disappearing; they are not evidence that a real rollback occurred.
 
 ## 6. Cleanup and cost
 

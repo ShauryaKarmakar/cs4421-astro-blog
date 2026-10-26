@@ -29,6 +29,11 @@ changed by this review.
 | Application stack | `UniBudgetStack`, `UPDATE_COMPLETE`, last updated 2026-10-24 22:59:56 UTC; 51 resources; **0 alarms, 0 metric filters** |
 | Application runtime | task definition `UniBudgetStackApplicationTask3DB06674:3`, image tag `v1`, desired 1 / running 1 |
 
+After this review, `v1.1.3` was released on 2026-10-25 19:37 UTC. The
+application stack is `UPDATE_COMPLETE`, the service runs task definition
+`:4` with image `v1.1.3` at desired 1 / running 1, and all four alarms remain
+`OK`. The monitoring stack itself was not changed by the release.
+
 Deployed alarms (from the live stack template):
 
 | Alarm name | Metric | Statistic / period | Threshold | Missing data |
@@ -105,7 +110,7 @@ application stack with its normal context, and the monitoring stack with
 ## 6. Operational leftovers and risks
 
 - **`unibudget-monitoring-20261025-1` was never executed, and no longer
-exists.** This change set on `UniBudgetStack` was created 2026-10-25 16:02:21
+  exists.** This change set on `UniBudgetStack` was created 2026-10-25 16:02:21
   UTC with 12 changes, including the four alarms and the metric filter that now
   belong to the monitoring stack; executing it would have recreated the
   duplicate alarms and doubled metric. A read-only check on 2026-10-26 lists no
@@ -124,7 +129,6 @@ exists.** This change set on `UniBudgetStack` was created 2026-10-25 16:02:21
   without an exception is covered by the target-5xx alarm, not this one.
 
 ## 7. Next approval
-
 1. Review the uncommitted diff for the files above.
 2. Commit and merge it before any application release, so the release uses the
    application stack that no longer defines alarms or the metric filter.

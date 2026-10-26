@@ -39,7 +39,7 @@ shared `requestId`, but the browser response may not carry the header.
 | `event` | all records | Stable event name, for example `http.request` |
 | `requestId` | records written while serving a request | Correlation id, also returned as `X-Request-Id` |
 | `method` | request-scoped records | HTTP method |
-| `path` | request-scoped records | URL pathname only, never the query string; capped at 512 characters |
+| `path` | request-scoped records | URL pathname only, never the query string; truncated to 512 characters, plus `...` when truncation occurs |
 | `status` | access records | HTTP status returned to the caller |
 | `durationMs` | access records | Integer milliseconds from middleware entry to response |
 | `errorName` | error records | Error class name only (`Error`, `DatabaseError`, …) |

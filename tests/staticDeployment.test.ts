@@ -137,6 +137,22 @@ describe('static deployment workflow', () => {
 		expect(testsIndex).toBeLessThan(uploadIndex);
 	});
 
+	it('provisions the disposable PostgreSQL both integration suites require', () => {
+		// `npm test -- --run` runs the whole suite, and both integration suites
+		// throw when CI is set without their database URL. Without this service
+		// the static deployment fails before it ever builds the site.
+		expect(staticWorkflow).toContain('image: postgres:16');
+		expect(staticWorkflow).toContain('BUDGET_TEST_DATABASE_URL: postgresql://');
+		expect(staticWorkflow).toContain('MIGRATION_TEST_DATABASE_URL: postgresql://');
+		expect(staticWorkflow).toContain('127.0.0.1:5432/unibudget_test');
+
+		const serviceIndex = staticWorkflow.indexOf('    services:');
+		const testsStepIndex = staticWorkflow.indexOf('      - name: Run Tests\n');
+		expect(serviceIndex).toBeGreaterThan(-1);
+		expect(testsStepIndex).toBeGreaterThan(-1);
+		expect(serviceIndex).toBeLessThan(testsStepIndex);
+	});
+
 	it('uses GitHub OIDC instead of long-lived access keys', () => {
 		expect(staticWorkflow).toContain('id-token: write');
 		expect(staticWorkflow).toContain('aws-actions/configure-aws-credentials@v4');

@@ -177,4 +177,9 @@ describe('blog route wiring', () => {
     expect(routeSource).not.toContain('Astro.props');
     expect(routeSource).not.toContain('getStaticPaths');
   });
+
+  it('sets a real 404 status when the entry cannot be resolved', () => {
+    // Rendering the not-found page alone would answer 200 for a missing post.
+    expect(routeSource).toContain('Astro.response.status = 404');
+  });
 });

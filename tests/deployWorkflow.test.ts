@@ -139,7 +139,11 @@ describe('deployment workflow contracts', () => {
       'LOAD_BALANCER_DNS: ${{ steps.outputs.outputs.load_balancer_dns }}',
     );
     expect(cloudFrontStep).toContain('cloudfront get-distribution-config');
-    expect(cloudFrontStep).toContain('.Origins[0].DomainName');
+    expect(cloudFrontStep).toContain(
+      `require_config "origin count" "$(jq -r '.Origins.Items | length' <<<"$config")" "1"`,
+    );
+    expect(cloudFrontStep).toContain('.Origins.Items[0].DomainName');
+    expect(cloudFrontStep).not.toContain("jq -r '.Origins | length'");
     expect(cloudFrontStep).toContain('"redirect-to-https"');
     expect(cloudFrontStep).toContain(
       '4135ea2d-6df8-44a3-9df3-4b5a84be39ad',
@@ -244,6 +248,7 @@ describe('deployment workflow contracts', () => {
       'Wait for the ECS Service',
       'Verify the Running Image',
       'Verify Application Health Through CloudFront',
+      'Verify Request Correlation Through CloudFront',
     ];
     const positions = names.map((name) =>
       workflow.indexOf(`      - name: ${name}\n`),
@@ -251,6 +256,47 @@ describe('deployment workflow contracts', () => {
 
     expect(positions.every((index) => index > -1)).toBe(true);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it('fails the release when the login response loses request correlation', () => {
+    const gate = stepBlock('Verify Request Correlation Through CloudFront');
+    const health = stepBlock('Verify Application Health Through CloudFront');
+    const healthIndex = workflow.indexOf(
+      '      - name: Verify Application Health Through CloudFront\n',
+    );
+    const gateIndex = workflow.indexOf(
+      '      - name: Verify Request Correlation Through CloudFront\n',
+    );
+
+    expect(healthIndex).toBeGreaterThan(-1);
+    expect(gateIndex).toBeGreaterThan(healthIndex);
+    expect(gate).not.toContain('bootstrapOnly');
+    expect(gate).toContain(
+      'APPLICATION_URL: ${{ steps.outputs.outputs.application_url }}',
+    );
+    expect(gate).toContain('${APPLICATION_URL%/}/login');
+    expect(gate).toContain('--dump-header -');
+    expect(gate).toContain('awk \'tolower($1) == "x-request-id:" {print $2}\'');
+    expect(gate).toContain('if [ -z "$request_id" ]');
+    expect(gate).toContain(
+      'The application did not return an X-Request-Id header through CloudFront.',
+    );
+    expect(gate).toContain('^[A-Za-z0-9._-]{8,64}$');
+    expect(gate).toContain('is malformed');
+
+    // The correlation check is additive. The status checks it sits beside stay
+    // in force, so a 200 is still required independently of the header.
+    expect(health).toContain('--fail');
+    expect(health).toContain('login_code');
+  });
+
+  it('keeps the correlation gate free of response data and soft failures', () => {
+    const gate = stepBlock('Verify Request Correlation Through CloudFront');
+
+    expect(gate).not.toContain('echo "$request_id"');
+    expect(gate).not.toContain('set-cookie');
+    expect(gate).not.toContain('authorization');
+    expect(gate).not.toMatch(/\|\|\s*true/);
   });
 
   it('validates the application task definition before migrating', () => {
@@ -509,6 +555,13 @@ describe('repository hygiene contracts', () => {
     expect(running).toContain('aws ecs list-tasks');
     expect(running).toContain('aws ecs describe-tasks');
     expect(running).toContain('.imageDigest == $digest');
+    // A circuit-breaker rollback can leave the previous task set healthy, so
+    // the release must also refuse a primary deployment that did not complete.
+    expect(running).toContain('rollout_state');
+    expect(running).toContain(
+      '.deployments[] | select(.status == "PRIMARY")',
+    );
+    expect(running).toContain('!= "COMPLETED"');
   });
 
   it('runs the application test suite before building the image', () => {
@@ -520,6 +573,14 @@ describe('repository hygiene contracts', () => {
     expect(testsIndex).toBeGreaterThan(-1);
     expect(testsIndex).toBeLessThan(buildIndex);
     expect(stepBlock('Run Tests')).toContain('npm test -- --run');
+  });
+
+  it('provides the PostgreSQL service the deployment test suite requires', () => {
+    // The integration suites fail closed without these; without the service the
+    // release stops at the test gate instead of silently skipping coverage.
+    expect(workflow).toContain('image: postgres:16');
+    expect(workflow).toContain('BUDGET_TEST_DATABASE_URL: postgresql://');
+    expect(workflow).toContain('MIGRATION_TEST_DATABASE_URL: postgresql://');
   });
 
   it('gates the rollout on the migration and reuses the same image tag', () => {

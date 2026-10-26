@@ -116,7 +116,6 @@ aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
 
 The expected output names `UniBudgetStack-Monitoring-Request5xx` with
 `enable: true` and `rollback: true`, alongside the enabled circuit breaker.
-
 The monitoring stack always creates `LiveTaskCountAlarm`; it requires a
 positive `desiredCount` and uses that value as the threshold. This is the
 monitoring path for the live service, which runs at desired count 1.

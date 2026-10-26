@@ -107,8 +107,11 @@ is deployed. Prefer a forward fix when time allows.
 Database recovery (last resort, forward-only migrations):
 
 1. Application rollback does **not** reverse schema or data changes.
-2. A restore requires a verified Supabase recovery point (backup or PITR) plus
-   an operator with Supabase credentials; neither exists in this repository.
+2. A verified manual logical recovery point exists for `v1.1.3` (see
+   [release-readiness.md](release-readiness.md)), but restoring it requires
+   Supabase credentials and operator access that are not part of this
+   repository. The project is on the Free Plan, so there are no managed
+   backups or point-in-time recovery.
 3. Coordinate the database restore with the application revision that matches
    the restored schema, then re-run every post-restore check.
 
