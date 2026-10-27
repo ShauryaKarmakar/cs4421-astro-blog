@@ -21,7 +21,7 @@ copy-pasteable Logs Insights queries are in [logging.md](logging.md).
 
 | Item | Code | Deployed | Notifying |
 | --- | --- | --- | --- |
-| Five alarms | Yes (`UniBudgetStack-Monitoring`) | Five deployed: four on 2026-10-25, `Request5xx` on 2026-10-26 | CloudWatch executed the SNS action successfully; inbox receipt not independently verified |
+| Five alarms | Yes (`UniBudgetStack-Monitoring`) | Five deployed: four on 2026-10-25, `Request5xx` on 2026-10-26 | CloudWatch executed the SNS action; SNS counted 1 delivered / 0 failed in the 2026-10-26 hour of the check; inbox receipt not independently verified |
 | `level=error` metric filter | Yes, in the monitoring stack | **Yes** — one filter on `/unibudget/ecs/application` | n/a |
 | `status>=500` metric filter | Yes, in the monitoring stack | Added 2026-10-26 and verified in the drill account, then deployed to production | Drives `Request5xx` |
 | SNS topic + subscription | Created; policy applied | **Yes** — topic exists | **Confirmed** — one email subscription has a real ARN |
@@ -58,6 +58,22 @@ arn:aws:sns:us-east-1:556890483680:unibudget-production-alarms". That proves
 CloudWatch executed the SNS action; it does not independently prove inbox
 receipt, and it does not prove metric-threshold evaluation.
 
+The same controlled check was repeated on 2026-10-26 on
+`UniBudgetStack-Monitoring-UnhealthyTargets` (state reason recorded as
+"Controlled verification of alarm-to-email delivery; no production incident"):
+`OK → ALARM` at 09:50:19 UTC, one `Action` history item
+("Successfully executed action …unibudget-production-alarms"), back to `OK` at
+09:50:36 UTC. In the 09:00–10:00 UTC hour, CloudWatch reports
+`AWS/SNS NumberOfMessagesPublished = 1`,
+`NumberOfNotificationsDelivered = 1`, and
+`NumberOfNotificationsFailed = 0` for the topic in that hour. SNS reports these
+per hour, not per message, so they are consistent with the 09:50 publish rather
+than independent proof of it. This is still the strongest notification evidence
+on record: CloudWatch executed the action, and SNS counted one delivery to the
+email endpoint. It does **not** show that the message landed in the mailbox
+rather than spam or quarantine, and both transitions were operator-set states,
+not metric threshold crossings.
+
 ### Verified at drill preparation (2026-10-25)
 
 | Item | Observed value |
@@ -68,7 +84,7 @@ receipt, and it does not prove metric-threshold evaluation.
 | Filter vs emitted logs | matched: live log stream contains `{"level":"info","event":"http.request",…,"requestId":…}` records, so `level` is a top-level JSON field |
 | Alarms | exactly five `UniBudgetStack-Monitoring-*`, all `OK`, each with `unibudget-production-alarms` as its action (`Request5xx` was added on 2026-10-26) |
 | Subscription | one email subscription with a real `SubscriptionArn` (confirmed) |
-| Notification delivery | CloudWatch executed the SNS action for a manual `StructuredErrors` transition on 2026-10-25 17:34 UTC; inbox receipt still unverified |
+| Notification delivery | CloudWatch executed the SNS action for a manual `StructuredErrors` transition on 2026-10-25 17:34 UTC and a manual `UnhealthyTargets` transition on 2026-10-26 09:50 UTC; SNS recorded 1 published / 1 delivered / 0 failed for the 2026-10-26 event. Inbox receipt is still unverified |
 
 No alarm threshold has been crossed by real traffic, and no production failure
 was generated for this review.
@@ -429,10 +445,11 @@ steps:
 
 ## What is still unverified
 
-- CloudWatch **executed** the SNS action for a manual `StructuredErrors` state
-  change (`Successfully executed action arn:aws:sns:...`). Inbox receipt was not
-  independently verified, and the manual transition was not a real metric
-  threshold breach.
+- CloudWatch **executed** the SNS action for manual `StructuredErrors` and
+  `UnhealthyTargets` state changes (`Successfully executed action arn:aws:sns:...`),
+  and SNS recorded 1 published / 1 delivered / 0 failed for the 2026-10-26
+  check. Inbox receipt was not independently verified, and neither transition
+  was a real metric threshold breach.
 - The 2026-10-26 drill crossing **did** prove metric evaluation, but its
   evidence captured only `StateUpdate` history. No `Action` item exists for it,
   so notification delivery from the drill is unverified even though the alarm
@@ -440,9 +457,10 @@ steps:
 - No synthetic **production** error was generated. The parser is covered by unit
   tests locally; live metric increments require a real event. Do not break a
   route to test this metric.
-- `Target5xx`, `UnhealthyTargets`, `LiveTaskCount`, and `StructuredErrors` were
-  `OK` at the final read-back. Their threshold-crossing behavior has not been
-  observed end to end.
+- At the 2026-10-26 23:44 UTC read-back all five alarms were `OK`. The only
+  production `ALARM` states on record are the two operator-set notification
+  checks above (`StructuredErrors` 2026-10-25, `UnhealthyTargets` 2026-10-26).
+  No production alarm has been driven into `ALARM` by real metric data.
 - The existing `Deploy` workflow is not a monitoring-only path: it builds and
   pushes an image, checks a release tag, and runs migrations. Use the reviewed
   separate-stack `cdk deploy` path above instead.

@@ -13,8 +13,11 @@ Status: **executed twice on 2026-10-26** in drill account `293633790894`
   public endpoint stayed healthy throughout. Notification delivery was still
   **not** verified.
 
-Neither run touched production, and production has **not** been redeployed with
-the changes from run 2.
+Neither run touched production. The changes from run 2 were deployed to
+production afterwards, on 2026-10-26: `UniBudgetStack-Monitoring` gained the
+filter and alarm, and `UniBudgetStack` attached `Request5xx` to the ECS service
+as its deployment alarm. Production has **not** yet had a rollout stopped by
+that alarm; only the drill account has.
 
 The production account must not be used to create an intentional outage. The
 stack uses fixed resource names (`UniBudgetStack`, `/unibudget/ecs/application`,
@@ -349,18 +352,23 @@ Evidence for the second run is in the untracked `drill-evidence-retest/` folder:
 
 ### What is still open
 
-1. **Production does not yet run the new alarm or filter.** The fix is verified
-   in the drill account only. The order is fixed: deploy
-   `UniBudgetStack-Monitoring` first (it owns `Request5xx` and imports the log
-   group and target group, so it can only be deployed after this stack exists),
-   then run a normal deployment. The workflow now verifies the alarm before
-   building or migrating and refuses to roll out without it; a manual `cdk
-   deploy` with `desiredCount >= 1` is refused at synthesis for the same reason.
+1. **Production runs the new alarm and filter, but has not exercised them.**
+   Both were deployed on 2026-10-26 in the fixed order: monitoring stack first
+   (it owns `Request5xx` and imports the log group and target group), then a
+   normal `UniBudgetStack` deployment. The live service reports
+   `deploymentConfiguration.alarms = [UniBudgetStack-Monitoring-Request5xx]`
+   with `rollback: true`; the alarm evaluates real traffic and is `OK`. No
+   production rollout has failed since, so the only stopped rollout remains
+   run 2 below. The workflow verifies the alarm before building or migrating
+   and refuses to roll out without it; a manual `cdk deploy` with
+   `desiredCount >= 1` is refused at synthesis for the same reason.
 2. **Notification delivery.** Nothing in this run proves a notification was
    sent. Only `StateUpdate` history was captured, no `Action` item exists in the
    evidence, and no subscription was confirmed in the drill account. Delivery
-   remains unverified for the drill; the production topic and subscription are
-   documented separately in [alarms.md](alarms.md).
+   remains unverified for the drill. In production, a controlled
+   `set-alarm-state` on 2026-10-26 produced an `Action` item and SNS reported
+   1 published / 1 delivered / 0 failed; inbox receipt is still unconfirmed.
+   See [alarms.md](alarms.md).
 3. **Circuit-breaker coverage for small services.** Rolling back a one-task
    service depends on the deployment alarm. With `BOUNDED_PERCENT` at 50 the
    breaker's threshold stays at 3 until the desired count exceeds 6, so it only

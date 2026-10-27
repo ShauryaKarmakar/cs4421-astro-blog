@@ -232,12 +232,14 @@ The monitoring stack imports the topic and does not create or subscribe one.
 As of 2026-10-26 both stacks are `UPDATE_COMPLETE`: the monitoring stack owns
 all five alarms and two filters, and the application stack's service watches
 `UniBudgetStack-Monitoring-Request5xx` as its deployment alarm (read back from
-`deploymentConfiguration.alarms`). All five alarms are `OK`, and CloudWatch
-alarm history records a successful SNS action from a manual state transition.
-Inbox receipt was not independently verified, and no real metric threshold
-crossing has been observed **in production** — one was observed in the
-disposable drill account on 2026-10-26 (see the drill record), so the production
-rollback path is configured rather than exercised. Do not
+`deploymentConfiguration.alarms`). All five alarms are `OK`. CloudWatch alarm
+history records successful SNS actions for two operator-set state transitions
+(`StructuredErrors` on 2026-10-25, `UnhealthyTargets` on 2026-10-26); for the
+2026-10-26 check SNS counted 1 published, 1 delivered and 0 failed. Inbox
+receipt was not independently verified, and no real metric threshold crossing
+has been observed **in production** — one was observed in the disposable drill
+account on 2026-10-26 (see the drill record), so the production rollback path is
+configured rather than exercised. Do not
 deploy the application stack to
 add alarms: its earlier monitoring change set is blocked by ECS/ECR coupling
 and would recreate resources now owned by the monitoring stack. The exact

@@ -2,7 +2,9 @@
 
 **Evidence document — can be included with the drill record.**
 
-Status: **executed once on 2026-10-26; partial pass.**
+Status: **run-1 post-mortem (executed 2026-10-26; partial pass).** A second run
+followed the same day after the fixes described in the addendum below; the
+canonical two-run record is [rollback-drill-2.md](rollback-drill-2.md).
 
 The canonical execution record is
 [rollback-drill-2.md](rollback-drill-2.md) §7. This document adds the blameless

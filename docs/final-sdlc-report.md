@@ -28,9 +28,20 @@ deployed, and observed in production. A green local suite is not a deployment.
 - **2026-10-26, monitoring:** five alarms and two metric filters are
   deployed in `UniBudgetStack-Monitoring`; all alarms are `OK` with actions
   enabled, and `UniBudgetStack` now watches `Request5xx` as its deployment
-  alarm. SNS reported one delivered and zero failed notifications for a
-  controlled publish. The mailbox itself has not been inspected, so inbox
-  receipt stays **unconfirmed**.
+  alarm. The notification chain is proven as far as SNS: a controlled
+  `set-alarm-state` on `UnhealthyTargets` produced a successful `Action` item,
+  and SNS counted 1 published / 1 delivered / 0 failed. The mailbox itself has
+  not been inspected, so inbox receipt stays **unconfirmed**, and no production
+  alarm has been driven into `ALARM` by real metric data.
+- **2026-10-26, validation:** the merged tree runs **306 Vitest tests in 33
+  files** — 300 pass and the 6 PostgreSQL integration tests skip with no
+  database; all 306 pass against a fresh disposable `postgres:16` container.
+  CDK: 3 suites, 37 tests; `astro check` 0 errors; ESLint 0 errors (17 warnings,
+  all `no-console` in scripts); production build succeeds; 48 workflow `run`
+  blocks parse with `bash -n`. One full-suite run timed out in
+  `migrationWorkflowExecution.test.ts` under 33 parallel workers; that file
+  passes 8/8 alone and the suite passed on rerun, so it is a timeout flake, not
+  a code failure.
 - **2026-10-26, request correlation:** the deployment workflow now fails a
   release when `/login` does not return a well-formed `X-Request-Id` header.
   The gate is tested in the repository but not yet part of a released image.
