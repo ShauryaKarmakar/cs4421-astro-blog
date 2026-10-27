@@ -179,7 +179,7 @@ is confirmed in the dashboard.
 | Post-deploy health/login/blog/404 checks | yes | yes | yes | passed in the release run |
 | Image provenance labels and digest | yes | yes | yes | running digest equals ECR digest |
 | Semantic and annotated tag enforcement | yes | yes | yes | `v1.1.3` on `c9eb373` |
-| ECR retention preflight | yes | yes | applied out-of-band | preflight passed; four manifests retained |
+| ECR retention preflight | yes | yes | **declared in CDK and recorded in the template** | live policy equals the deployed template and the CDK definition (checked 2026-10-27); preflight passed |
 | CloudWatch alarms + metric filter | yes | yes | **yes, separate stack** | five alarms and two filters present since 2026-10-26, all `OK` |
 | ECS deployment alarm | yes | CDK + workflow contract tests | **yes** | `Request5xx` attached with `rollback: true`; the alarm has not yet failed a production rollout |
 | SNS notification action | yes | CDK tests | **yes** | alarm history records successful actions (2026-10-25 `StructuredErrors`, 2026-10-26 `UnhealthyTargets`, both operator-set states); SNS counted 1 published / 1 delivered / 0 failed for the 2026-10-26 check; inbox receipt still not independently verified |
@@ -191,14 +191,26 @@ is confirmed in the dashboard.
 
 ## Remaining risks and open work
 
-1. **CloudFront viewer TLS is `TLSv1`.** Raising it to `TLSv1.2_2021` requires
-   a custom domain, an ACM certificate in `us-east-1`, DNS changes, and a
-   separate approved change. See [cloudfront-tls-plan.md](cloudfront-tls-plan.md).
-2. **The GitHub deploy role has `AdministratorAccess`.** The scoped policy in
-   [iam-least-privilege.md](iam-least-privilege.md) is a proposal, not applied.
-3. **The live ECR lifecycle policy was applied out-of-band and has not been
-   reconciled by CloudFormation.** The next `cdk diff` will show a pending
-   repository update until an approved stack deployment records it.
+1. **CloudFront viewer TLS is `TLSv1`.** Both distributions use the default
+   certificate; the account has no ACM certificate and no hosted zone. Raising
+   it to `TLSv1.2_2021` requires a domain, certificate, DNS, CDK and workflow
+   changes, and a separate approval. Requirements are in
+   [cloudfront-tls-plan.md](cloudfront-tls-plan.md) (reviewed 2026-10-27).
+2. **The GitHub deploy role has `AdministratorAccess` — outstanding, not fixed.**
+   A scoped policy remains a **proposal** in
+   [iam-least-privilege.md](iam-least-privilege.md) (derived from the three
+   workflows and CloudTrail on 2026-10-27). It is not attached, because its
+   permissions have not been validated against all three deployment workflows;
+   staging validation is a future security task, planned in
+   [iam-staging-validation-plan.md](iam-staging-validation-plan.md), and blocked
+   on a designated staging account. The CDK bootstrap execution role also needs
+   scoping.
+3. **The ECR lifecycle policy is reconciled; no action is pending.** The
+   policy was first applied through the ECR API on 2026-10-25, then recorded by
+   the v1.1.3 stack update the same day (CloudTrail `PutLifecyclePolicy` at
+   19:37:13Z). A read-only comparison on 2026-10-27 found the live policy, the
+   deployed template, and the CDK definition equal; see
+   [ecr-lifecycle-reconciliation.md](ecr-lifecycle-reconciliation.md).
 4. **The stale change set `unibudget-monitoring-20261025-1` no longer
    exists.** It was never executed, and a read-only check on 2026-10-26 lists no
    change sets for any production stack. Its historical risk was that it would

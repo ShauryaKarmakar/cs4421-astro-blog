@@ -45,9 +45,10 @@ application. The application stack no longer accepts an alarm topic; monitoring
 is deployed separately and imports the existing topic itself.
 
 The stack declares ten-tagged/ten-untagged ECR retention. The live repository
-policy was applied out-of-band and passes the preflight, while the deployed
-CloudFormation template still records the older policy; expect that ECR-only
-drift on the next application-stack diff. Follow the full sequence in
+policy, the deployed CloudFormation template, and this definition are equal
+(checked 2026-10-27), so there is no pending ECR drift; see
+[../docs/ecr-lifecycle-reconciliation.md](../docs/ecr-lifecycle-reconciliation.md).
+Follow the full sequence in
 [../docs/deployment.md](../docs/deployment.md) and the release gate in
 [../docs/release-readiness.md](../docs/release-readiness.md).
 

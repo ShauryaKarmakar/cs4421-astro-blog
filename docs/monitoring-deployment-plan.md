@@ -149,9 +149,10 @@ application stack with its normal context, and the monitoring stack with
   stack. Those two lines and the now-unused `ALARM_TOPIC_ARN` job variable were
   removed; the workflow no longer references the context at all. The monitoring
   stack is still deployed separately with its own context values.
-- The application stack's ECR template still says `any` / keep 5 untagged,
-  while the live repository policy retains 10. The next application deployment
-  reconciles that drift; it is unrelated to monitoring ownership.
+- The application stack's ECR template drift was closed by the 2026-10-25
+  v1.1.3 deployment; live, template, and CDK policy are equal (checked
+  2026-10-27). See [ecr-lifecycle-reconciliation.md](ecr-lifecycle-reconciliation.md).
+  This is unrelated to monitoring ownership.
 - The monitoring stack is not part of the application deploy workflow. Changing
   alarms requires its own explicit `monitoringOnly` synthesis and approval.
 - The structured-error threshold counts only `level: "error"` records. A 5xx

@@ -211,9 +211,9 @@ owner. A defensible answer is concrete, not a list of branch names:
 
 **If AI assisted, do not use this paragraph unchanged.** The repository has one
 Codebuff-authored commit on GitHub (`24919e6`, PR #37) and local
-Freebuff/agent refs. Say what you actually did, and use the disclosure script in
-[defence-red-team.md](defence-red-team.md#4-the-ai-attribution-answer). Do not
-claim every line.
+Freebuff/agent refs. Say what you actually did in your own words — name the
+parts you reviewed, changed, or verified — and do not claim every line. Keep a
+short written disclosure with the submission if the assessment asks for one.
 
 Evidence to point at: `hello-cdk/lib/cdk-stack.ts`,
 `hello-cdk/lib/monitoring-stack.ts`, `.github/workflows/deploy.yml`,

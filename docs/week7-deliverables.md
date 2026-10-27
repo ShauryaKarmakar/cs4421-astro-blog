@@ -181,10 +181,14 @@ preflight returns `safe: true`, and all three existing manifests remain:
 | Images in repository | 3 manifests: `v1` (`sha256:1a68b6ef…`, 120.7 MB), plus two untagged (same-size platform manifest and a 1.5 KB attestation) |
 | Policy verification | Read-back matches the merged CDK policy byte-for-byte |
 
-The ECR policy change is not reflected in the deployed CloudFormation
-template yet. A later `cdk diff` will show a pending repository update until an
-approved stack deployment reconciles it. The workflow's read-only preflight
-remains in place and fails before the build if the live policy becomes unsafe.
+The ECR policy change is now reflected in the deployed CloudFormation template:
+the v1.1.3 stack update on 2026-10-25 recorded it (CloudTrail
+`PutLifecyclePolicy` at 19:37:13Z). A read-only comparison on 2026-10-27 found
+the live policy, the deployed template, and the CDK definition equal, so no
+reconciliation deployment is pending; see
+[ecr-lifecycle-reconciliation.md](ecr-lifecycle-reconciliation.md). The
+workflow's read-only preflight remains in place and fails before the build if
+the live policy becomes unsafe.
 
 ## 3. ECS application availability
 

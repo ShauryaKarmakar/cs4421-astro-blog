@@ -1087,11 +1087,14 @@ The applied policy is:
 {"rules":[{"rulePriority":1,"description":"Retain the ten most recent tagged releases as rollback candidates.","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}},{"rulePriority":2,"description":"Expire untagged manifests and attestations no longer referenced by a tagged release.","selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}
 ```
 
-CloudFormation has not reconciled the change: the deployed stack template still
-records the old policy. Run `cdk diff` before the next stack deployment and
-expect a pending repository update. The deployment workflow's read-only
-preflight remains in place and fails before the build if the live policy ever
-becomes unsafe again.
+CloudFormation has since reconciled the change: the deployed template records
+this same policy. The v1.1.3 stack update on 2026-10-25 applied it (CloudTrail
+`PutLifecyclePolicy` at 19:37:13Z by the CDK execution role), and a read-only
+comparison on 2026-10-27 found the live policy, the deployed template, and the
+CDK definition equal. No pending ECR update remains; see
+[ecr-lifecycle-reconciliation.md](ecr-lifecycle-reconciliation.md). The
+deployment workflow's read-only preflight remains in place and fails before the
+build if the live policy ever becomes unsafe again.
 
 A lifecycle preview reflects only the policy currently applied; ECR has no
 dry run for an unapplied policy. Re-run the preview after any later policy
