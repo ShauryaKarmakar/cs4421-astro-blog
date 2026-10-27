@@ -1,0 +1,28 @@
+ECS deployment events - service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ
+Broken deployment started 19:11:37Z; explicit rollback issued 19:25:22Z
+
+2026-10-26T19:05:30.837000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b)
+2026-10-26T19:06:08.261000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) has reached a steady state.
+2026-10-26T19:11:50.869000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) has started 1 tasks: (task e44b3dc902444e6ab7d389f34963f5cb).
+2026-10-26T19:12:30.913000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b)
+2026-10-26T19:13:42.299000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) (task e44b3dc902444e6ab7d389f34963f5cb) (port 8080) is unhealthy in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b) due to (reason Health checks failed with these codes: [500]).
+2026-10-26T19:13:42.331000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) has stopped 1 running tasks: (task e44b3dc902444e6ab7d389f34963f5cb).
+2026-10-26T19:13:52.254000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b)
+2026-10-26T19:13:52.260000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ, taskSet ecs-svc/6062965555061859292) has begun draining connections on 1 tasks.
+2026-10-26T19:13:52.321000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b)
+2026-10-26T19:19:51.849000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) has started 1 tasks: (task de806b3aca194c72a7577ecdd82e86ee).
+2026-10-26T19:20:31.762000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b)
+2026-10-26T19:21:43.148000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) (task de806b3aca194c72a7577ecdd82e86ee) (port 8080) is unhealthy in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b) due to (reason Health checks failed with these codes: [500]).
+2026-10-26T19:21:43.178000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) has stopped 1 running tasks: (task de806b3aca194c72a7577ecdd82e86ee).
+2026-10-26T19:21:44.060000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b)
+2026-10-26T19:21:53.759000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ, taskSet ecs-svc/6062965555061859292) has begun draining connections on 1 tasks.
+2026-10-26T19:27:42.027000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) has started 1 tasks: (task 290037cf69874537922cbeb59dea3138).
+2026-10-26T19:28:12.504000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b)
+2026-10-26T19:28:53.232000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) has stopped 1 running tasks: (task 06af7538a20b488c8298e25dfe77ff3a).
+2026-10-26T19:29:03.684000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-DZR2E5DNOBVS/ba83e14d8caf2c2b)
+2026-10-26T19:29:03.692000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ, taskSet ecs-svc/0640894102675749148) has begun draining connections on 1 tasks.
+2026-10-26T19:30:04.992000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) (deployment ecs-svc/0588103857377016261) deployment completed.
+2026-10-26T19:30:04.993000+00:00	(service UniBudgetStack-ApplicationService423C69C6-jRcaqpOHPGyJ) has reached a steady state.
+
+Final: task definition arn:aws:ecs:us-east-1:293633790894:task-definition/UniBudgetStackApplicationTask3DB06674:2
+Final: primary rollout COMPLETED

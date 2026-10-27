@@ -44,8 +44,9 @@ migration revision.
 ## Consequences
 
 - Deployments are slower but have one auditable path and one image identity.
-- The workflow needs a valid recovery point attestation for a normal
-  deployment; a bootstrap deployment is separate.
+- The workflow needs a valid recovery point attestation before it deploys; it
+  refuses to run at all when the stack does not exist, so creating a stack is a
+  separate, manual operation.
 - Post-deployment route checks can fail a release after the stack update; the
   circuit breaker and the previous task definition remain the recovery path.
 - The workflow cannot verify restorability itself; the recovery reference and

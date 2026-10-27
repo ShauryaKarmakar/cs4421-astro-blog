@@ -55,7 +55,9 @@ drift on the next application-stack diff. Follow the full sequence in
 
 The monitoring stack is intentionally not part of the normal application
 deploy. It is deployed as `UniBudgetStack-Monitoring` (`UPDATE_COMPLETE` on
-2026-10-25) with four `OK` alarms and one metric filter. It uses
+2026-10-26) with five `OK` alarms and two metric filters; the fifth,
+`Request5xx`, is the deployment alarm the application stack passes to the ECS
+service through `-c deploymentAlarmName`. It uses
 `LiveTaskCount`, not `RunningTaskCount`, because the latter requires CloudWatch
 Container Insights. Use a reviewed direct command with the live ALB,
 target-group, ECS, and topic values; see [../docs/alarms.md](../docs/alarms.md)
@@ -76,7 +78,7 @@ npx cdk deploy UniBudgetStack-Monitoring --require-approval never \
   -c logGroupName=/unibudget/ecs/application
 ```
 
-The change set must contain only the four alarms, one metric filter, and
+The change set must contain only the five alarms, two metric filters, and
 `CDKMetadata`. Stop if it proposes any ECS, ECR, IAM, SNS, or log-group change.
 
 ## Useful commands

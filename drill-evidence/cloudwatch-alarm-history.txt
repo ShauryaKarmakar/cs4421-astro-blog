@@ -1,0 +1,30 @@
+CloudWatch alarms after the drill
+
+== UniBudgetStack-Monitoring-Target5xx : current state OK
+2026-10-26T19:09:23.952000+00:00	Alarm updated from INSUFFICIENT_DATA to OK
+
+== UniBudgetStack-Monitoring-UnhealthyTargets : current state OK
+2026-10-26T19:09:01.948000+00:00	Alarm updated from INSUFFICIENT_DATA to OK
+
+== UniBudgetStack-Monitoring-LiveTaskCount : current state OK
+2026-10-26T19:09:09.126000+00:00	Alarm updated from INSUFFICIENT_DATA to OK
+
+== UniBudgetStack-Monitoring-StructuredErrors : current state OK
+2026-10-26T19:10:00.827000+00:00	Alarm updated from INSUFFICIENT_DATA to OK
+
+UnHealthyHostCount (1-minute Maximum) during the broken deployment - all 0.0:
+2026-10-26T19:11:00+00:00	0.0
+2026-10-26T19:12:00+00:00	0.0
+2026-10-26T19:13:00+00:00	0.0
+2026-10-26T19:14:00+00:00	0.0
+2026-10-26T19:15:00+00:00	0.0
+2026-10-26T19:16:00+00:00	0.0
+2026-10-26T19:17:00+00:00	0.0
+2026-10-26T19:18:00+00:00	0.0
+2026-10-26T19:19:00+00:00	0.0
+2026-10-26T19:20:00+00:00	0.0
+2026-10-26T19:21:00+00:00	0.0
+2026-10-26T19:22:00+00:00	0.0
+2026-10-26T19:23:00+00:00	0.0
+2026-10-26T19:24:00+00:00	0.0
+2026-10-26T19:25:00+00:00	0.0

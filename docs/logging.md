@@ -167,7 +167,7 @@ apply. If they are framework stack traces instead, the running image predates
 | --- | --- |
 | Log group | `aws logs describe-log-groups --log-group-name-prefix "/unibudget"` |
 | Metric filter | `aws logs describe-metric-filters --log-group-name "/unibudget/ecs/application"` |
-| The four alarms and states | `aws cloudwatch describe-alarms --alarm-name-prefix UniBudgetStack-Monitoring- --query 'MetricAlarms[].{Name:AlarmName,State:StateValue,Actions:AlarmActions}'` |
+| The five alarms and states | `aws cloudwatch describe-alarms --alarm-name-prefix UniBudgetStack-Monitoring- --query 'MetricAlarms[].{Name:AlarmName,State:StateValue,Actions:AlarmActions}'` |
 | Alarm history and actions | `aws cloudwatch describe-alarm-history --alarm-name UniBudgetStack-Monitoring-StructuredErrors --max-records 20` (repeat per alarm) |
 | ECS service and deployment events | `aws ecs describe-services --cluster <cluster> --services <service> --query 'services[0].{desired:desiredCount,running:runningCount,taskDef:taskDefinition,deployments:deployments,events:events[0:20]}'` |
 | Task stop reason | `aws ecs describe-tasks --cluster <cluster> --tasks <task-id> --query 'tasks[0].{lastStatus:lastStatus,stopCode:stopCode,stoppedReason:stoppedReason,containers:containers[].[name,exitCode,reason]}'` |

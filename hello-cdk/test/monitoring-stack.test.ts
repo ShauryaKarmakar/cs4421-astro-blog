@@ -62,11 +62,11 @@ function alarmFor(template: Template, metricName: string): AlarmProperties {
 }
 
 describe('UniBudgetMonitoringStack', () => {
-  test('creates only the four alarms and the metric filter', () => {
+  test('creates only the five alarms and the two metric filters', () => {
     const template = createTemplate();
 
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 4);
-    template.resourceCountIs('AWS::Logs::MetricFilter', 1);
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 5);
+    template.resourceCountIs('AWS::Logs::MetricFilter', 2);
 
     for (const type of [
       'AWS::ECS::Service',
@@ -99,6 +99,7 @@ describe('UniBudgetMonitoringStack', () => {
 
     expect(names).toEqual([
       'UniBudgetStack-Monitoring-LiveTaskCount',
+      'UniBudgetStack-Monitoring-Request5xx',
       'UniBudgetStack-Monitoring-StructuredErrors',
       'UniBudgetStack-Monitoring-Target5xx',
       'UniBudgetStack-Monitoring-UnhealthyTargets',
@@ -123,6 +124,38 @@ describe('UniBudgetMonitoringStack', () => {
         },
       ],
     });
+  });
+
+  test('counts 5xx access records, which the error filter cannot see', () => {
+    const template = createTemplate();
+
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      LogGroupName: '/unibudget/ecs/application',
+      FilterPattern: '{ $.status >= 500 }',
+      MetricTransformations: [
+        {
+          MetricNamespace: 'UniBudget/Application',
+          MetricName: 'Http5xxCount',
+          MetricValue: '1',
+          DefaultValue: 0,
+        },
+      ],
+    });
+  });
+
+  test('request 5xx alarm trips on the first failing minute', () => {
+    const alarm = alarmFor(createTemplate(), 'Http5xxCount');
+
+    expect(alarm).toMatchObject({
+      Namespace: 'UniBudget/Application',
+      Statistic: 'Sum',
+      Period: 60,
+      Threshold: 0,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+    expect(alarm.Dimensions).toBeUndefined();
   });
 
   test('sends every alarm to the imported SNS topic', () => {

@@ -13,6 +13,10 @@ export default defineConfig({
 			'node_modules/**',
 			'dist/**',
 			'.astro/**',
+			// A linked worktree lives under .git/, and its own node_modules and
+			// test files are not this project's source. Without this, a local
+			// run scans another checkout and reports its failures as ours.
+			'.git/**',
 		],
 	},
 });

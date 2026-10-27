@@ -539,6 +539,46 @@ describe('UniBudget infrastructure', () => {
     });
   });
 
+  test('monitors the supplied deployment alarm during a rollout', () => {
+    const template = createTemplate({
+      desiredCount: 1,
+      deploymentAlarmName: 'UniBudgetStack-Monitoring-Request5xx',
+    });
+
+    template.hasResourceProperties('AWS::ECS::Service', {
+      DeploymentConfiguration: Match.objectLike({
+        DeploymentCircuitBreaker: {
+          Enable: true,
+          Rollback: true,
+        },
+        Alarms: {
+          Enable: true,
+          AlarmNames: ['UniBudgetStack-Monitoring-Request5xx'],
+          Rollback: true,
+        },
+      }),
+    });
+  });
+
+  test('omits deployment alarms when no alarm name is supplied', () => {
+    const template = createTemplate({ desiredCount: 1 });
+    const services = Object.values(
+      template.findResources('AWS::ECS::Service'),
+    ).map((resource) => resource.Properties);
+
+    expect(services).toHaveLength(1);
+    expect(services[0].DeploymentConfiguration?.Alarms).toMatchObject({
+      Enable: false,
+      AlarmNames: [],
+    });
+  });
+
+  test('rejects a malformed deployment alarm name', () => {
+    expect(() => createTemplate({ deploymentAlarmName: 'bad name' })).toThrow(
+      'deploymentAlarmName',
+    );
+  });
+
   test('does not create monitoring resources owned by the separate monitoring stack', () => {
     const template = createTemplate({ desiredCount: 1 });
 

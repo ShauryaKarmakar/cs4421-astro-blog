@@ -1,0 +1,18 @@
+Image verification — drill account 293633790894, region us-east-1
+Repository: 293633790894.dkr.ecr.us-east-1.amazonaws.com/unibudgetstack-applicationrepository13e54097-juvj80yautoj
+
+PREVIOUS (baseline, before the drill)
+  Task definition : UniBudgetStackApplicationTask3DB06674:2
+  Image tag       : v1.1.3
+  Image digest    : sha256:949cfcf830dc11b64439ebec87662336f4fefecf456ca7ebfd18d7cb6be99731
+
+BROKEN (drill only)
+  Task definition : UniBudgetStackApplicationTask3DB06674:3
+  Image tag       : v0.0.0-drill.1
+  Image digest    : sha256:6bf3b039bcaac7a9a850c968b2e126b438e73bc48a6ff3629f83dce3c1c8db63
+
+RESTORED (after rollback, read from the running ECS task)
+  Task definition : arn:aws:ecs:us-east-1:293633790894:task-definition/UniBudgetStackApplicationTask3DB06674:2
+  Image / digest  : 293633790894.dkr.ecr.us-east-1.amazonaws.com/unibudgetstack-applicationrepository13e54097-juvj80yautoj:v1.1.3	sha256:949cfcf830dc11b64439ebec87662336f4fefecf456ca7ebfd18d7cb6be99731
+
+Restored digest equals the baseline digest: verified above.

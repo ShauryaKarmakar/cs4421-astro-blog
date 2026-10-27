@@ -131,15 +131,33 @@ describe('documented Logs Insights queries', () => {
 		expect([...unknown]).toEqual([]);
 	});
 
-	it('documents the four deployed alarm names', () => {
+	it('documents the five deployed alarm names', () => {
 		for (const name of [
 			'UniBudgetStack-Monitoring-Target5xx',
 			'UniBudgetStack-Monitoring-UnhealthyTargets',
 			'UniBudgetStack-Monitoring-LiveTaskCount',
 			'UniBudgetStack-Monitoring-StructuredErrors',
+			'UniBudgetStack-Monitoring-Request5xx',
 		]) {
 			expect(read('docs/chaos-drill.md')).toContain(name);
 			expect(read('docs/alarms.md')).toContain(name);
 		}
+	});
+});
+
+describe('deployment correlation gate', () => {
+	it('fails the release when the response loses its request id', () => {
+		const workflow = read('.github/workflows/deploy.yml');
+
+		expect(workflow).toContain(
+			'awk \'tolower($1) == "x-request-id:" {print $2}\'',
+		);
+		expect(workflow).toContain(
+			'The application did not return a correlatable X-Request-Id header through CloudFront.',
+		);
+		const gateIndex = workflow.indexOf('x-request-id:');
+		const verifyStepIndex = workflow.indexOf('      - name: Verify Application Health Through CloudFront');
+		expect(verifyStepIndex).toBeGreaterThan(-1);
+		expect(gateIndex).toBeGreaterThan(verifyStepIndex);
 	});
 });

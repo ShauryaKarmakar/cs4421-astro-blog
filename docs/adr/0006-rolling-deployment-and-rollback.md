@@ -2,6 +2,12 @@
 
 - Status: Accepted
 - Date: 2026-10-25
+- Deployment status (2026-10-26): implemented, verified end to end in the
+disposable drill account, then deployed to production in the required order —
+the monitoring stack added `Request5xx` and its metric filter, and the
+application stack attached the alarm to the ECS service with rollback enabled.
+The alarm now evaluates production traffic; it has not yet failed a real
+production rollout.
 
 ## Context
 
@@ -17,6 +23,8 @@ Use the ECS rolling deployment controller with:
 - `minHealthyPercent: 100` and `maxHealthyPercent: 200`;
 - the ALB target group gating traffic on `/api/health`;
 - `circuitBreaker: { rollback: true }`;
+- the `Request5xx` CloudWatch alarm attached as an ECS **deployment alarm**
+  (`ROLLBACK_ON_ALARM`), passed by name from the separate monitoring stack;
 - immutable ECR tags, so the previous task definition remains a known image;
 - CloudFront caching disabled, so no edge purge is needed after a task change.
 
@@ -38,8 +46,20 @@ second production environment or traffic switch.
 - Old and new task versions can coexist briefly during a rollout; both must
   tolerate the current database schema. This is why migrations are backward
   compatible and run before the new tasks.
-- A failed rollout is detected by target health and the deployment circuit
-  breaker, which restores the last completed task definition automatically.
+- A failed rollout is detected by target health and, decisively, by the
+  deployment alarm, which restores the last completed task definition
+  automatically. Verified on 2026-10-26: a broken readiness endpoint took the
+  alarm to `ALARM` 33 s after the first failed probe and ECS rolled back with no
+  operator action (`docs/rollback-drill-2.md` §8).
+- The circuit breaker is **not** the primary mechanism on this service size.
+  ECS clamps its bounded-percent threshold to a minimum of three failed tasks
+  and the service runs one task, so the breaker needs three failed launches
+  before it acts. At the observed cadence (one failed launch every ~eight
+  minutes) that is a rollout of roughly 25 minutes, which is why run 1 did not
+  roll back automatically and the operator did it by hand. The breaker stays
+  enabled for restart behaviour and as an independent second line of defence;
+  its threshold scales with the desired count, so it becomes proportionally
+  faster as the service grows.
 - A successful `services-stable` is not sufficient evidence: the workflow also
   verifies the running image tag and digest.
 - Rollback restores the previous task definition; it does not reverse a

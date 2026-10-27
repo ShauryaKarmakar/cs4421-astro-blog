@@ -110,6 +110,7 @@ Articles live in `src/content/blog`, so publishing one is a content change plus
 a push to `main`. The upload never deletes anything: when an article is removed,
 the workflow reports the old objects as warnings and they have to be deleted
 deliberately.
+
 ## Operations and release documentation
 
 - [Release readiness and deployment gate](./docs/release-readiness.md)
@@ -123,19 +124,29 @@ deliberately.
 - [Backup and recovery runbook](./docs/backup-and-recovery.md)
 - [Week 7 deliverables and evidence](./docs/week7-deliverables.md)
 
-The current production image is `v1.1.3`, which includes the blog SSR fix and
-request correlation; the next release also gains the deployment gate that fails
-the run when `X-Request-Id` is missing from `/login`. The ECR lifecycle policy
-is now release-safe, and the SNS topic and email subscription are confirmed.
+Production runs image `v1.1.3` (task definition revision 4), which includes the
+blog SSR fix and request correlation; the next release also gains the deployment
+gate that fails the run when `X-Request-Id` is missing from `/login`. On
+2026-10-26 `/api/health` and `/login` returned 200, `/blog/first-post` returned
+200, and an unknown slug returned 404 through CloudFront. The ECR lifecycle
+policy is release-safe, and the SNS topic and email subscription are confirmed.
 
-The four alarms and the metric filter are deployed in the separate
+Rollback Drill 2 was executed twice on 2026-10-26 in an isolated account; the
+second run rolled back automatically on the `Request5xx` deployment alarm. That
+alarm and its `status >= 500` metric filter were deployed to production later
+the same day, and the ECS service now watches the alarm as its deployment
+alarm — see [rollback-drill-2.md](./docs/rollback-drill-2.md).
+
+The five alarms and the two metric filters are deployed in the separate
 `UniBudgetStack-Monitoring` stack, which imports the existing log group and SNS
-topic and did not update ECS, ECR, IAM, or the SNS topic. All four alarms are
-`OK`; CloudWatch executed the SNS action successfully. Inbox receipt and a real
-metric threshold crossing remain unproven. The application stack no longer
+topic and did not update ECS, ECR, IAM, or the SNS topic. All five alarms are
+`OK`; CloudWatch executed the SNS action for an operator-set check on
+2026-10-26 (SNS counted 1 delivered, 0 failed). Inbox receipt, and a real metric
+threshold crossing in production, remain unproven: `Request5xx` is deployed and
+the service watches it, but no production rollout has tripped it. The application stack no longer
 defines alarms or a metric filter; its test asserts that absence. The older
 `UniBudgetStack` change set remains blocked because it also proposed
 task-definition and IAM changes and would recreate the monitoring resources if
 executed; see [alarms.md](docs/alarms.md). The readiness document lists the
-remaining blockers (application release, IAM scope, CloudFront TLS, and the
-unexecuted rollback drill).
+remaining blockers (IAM scope, CloudFront TLS, and an unexercised production
+rollback).

@@ -70,13 +70,27 @@ implementation at the same time. They now live in the dedicated
   publishes `UniBudget/Application/StructuredErrorCount`. Because access
   records use `warn` for 5xx, one failed request increments the metric once
   (its exception record), not twice.
-- Four alarms are owned by `hello-cdk/lib/monitoring-stack.ts`, deployed as the
+- A second metric filter matches the numeric field `$.status >= 500` and
+  publishes `UniBudget/Application/Http5xxCount`. Without it a failed
+  readiness probe (a `warn` access record with no exception) is invisible to
+  every alarm that waits two periods: the load balancer removes an unhealthy
+  target in about a second, so `UnHealthyHostCount` never stays broken long
+  enough. Added on 2026-10-26 after Rollback Drill 2 run 1.
+- Five alarms are owned by `hello-cdk/lib/monitoring-stack.ts`, deployed as the
   `UniBudgetStack-Monitoring` stack: target 5xx count, unhealthy targets, live
-  task count below the desired count, and structured error count. Their names
-  are prefixed `UniBudgetStack-Monitoring-`, their thresholds are
-  `GreaterThanThreshold` 5, `GreaterThanThreshold` 0, `LessThanThreshold`
-  `desiredCount`, and `GreaterThanThreshold` 5, and missing data is
-  `notBreaching` except for the task-count alarm, which is `breaching`.
+  task count below the desired count, structured error count, and request 5xx
+  count. Their names are prefixed `UniBudgetStack-Monitoring-`, their thresholds
+  are `GreaterThanThreshold` 5, `GreaterThanThreshold` 0, `LessThanThreshold`
+  `desiredCount`, `GreaterThanThreshold` 5, and `GreaterThanThreshold` 0 over a
+  single one-minute period, and missing data is `notBreaching` except for the
+  task-count alarm, which is `breaching`.
+- `Request5xx` is also the ECS service's deployment alarm. `UniBudgetStack`
+  receives the alarm name through the `deploymentAlarmName` context value,
+  because the monitoring stack can only be created after the application stack
+  exists, so a cross-stack reference would be circular. The deploy workflow
+  verifies the alarm exists before it builds, then fails the release if the
+  service is not watching it. The name is a required context value: switching to
+  CloudFormation rollback without an alarm is a deliberate, separate change.
 - The monitoring stack creates no ECS, ECR, IAM, log-group, or SNS resources.
   It imports the existing log group, the ALB and target-group dimension values,
   the cluster and service names, and the operator-managed SNS topic. The
@@ -99,7 +113,8 @@ implementation at the same time. They now live in the dedicated
   unconfirmed subscription is not reliable and would bake an address into
   infrastructure configuration.
 - **One alarm per metric with no runbook** — rejected as noise; the four
-  selected alarms map to distinct operator actions.
+  selected alarms map to distinct operator actions. `Request5xx` was added to
+  that set because the drill showed the other four cannot see a failed rollout.
 - **A third-party logging library** — rejected; the schema is small, the
   platform already ships JSON to CloudWatch, and a dependency would need its own
   redaction guarantees. `AsyncLocalStorage` and `JSON.stringify` are built in.
@@ -138,7 +153,9 @@ implementation at the same time. They now live in the dedicated
   metric.
 - `warn` records are not counted by the structured-error alarm. A 5xx response
   that is generated without an exception (for example the readiness probe's
-  `503`) is caught by the target-5xx or unhealthy-target alarm instead.
+  `503`) is caught by the `Request5xx` alarm, which watches the second filter
+  and rolls the deployment back; the target-5xx and unhealthy-target alarms were
+  too slow to see it.
 - Without a confirmed subscription on the SNS topic, alarms change state but
   notify nobody. The topic and a confirmed subscription are deployment
   prerequisites, not something either stack creates.

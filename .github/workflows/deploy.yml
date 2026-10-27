@@ -11,11 +11,6 @@ on:
         description: Running task count after migration (1-10); never silently scaled to zero
         required: true
         type: string
-      bootstrapOnly:
-        description: First deployment only - create the stack and secrets without migrating or starting the app
-        required: true
-        type: boolean
-        default: false
       recoveryPlanVerified:
         description: Confirm a restorable Supabase backup or PITR restore point was verified for this migration
         required: true
@@ -48,6 +43,11 @@ env:
   DESIRED_COUNT: ${{ inputs.desiredCount }}
   RECOVERY_POINT_REFERENCE: ${{ inputs.recoveryPointReference }}
   RECOVERY_POINT_TIMESTAMP: ${{ inputs.recoveryPointTimestamp }}
+  # The CloudWatch alarm the ECS service watches during a rollout. It is owned
+  # by UniBudgetStack-Monitoring, which is deployed separately and before any
+  # release that starts tasks. Override the repository variable only if the
+  # alarm is renamed; the metric and namespace are checked before the rollout.
+  DEPLOYMENT_ALARM_NAME: ${{ vars.DEPLOYMENT_ALARM_NAME || 'UniBudgetStack-Monitoring-Request5xx' }}
 
 jobs:
   deploy:
@@ -107,28 +107,33 @@ jobs:
             echo "::error::imageTag must be a semantic release version such as v2.0.0; branch names and commit SHAs are not release tags."
             exit 1
           fi
-          # A normal release must correspond to an annotated Git tag on the
-          # commit being built. Without this check the ECR tag and the OCI
-          # version label could name a release that was never tagged, or a tag
-          # could point at a different commit than the image. A bootstrap run
-          # publishes no image, so it only needs the semver syntax above.
-          if [ "${{ inputs.bootstrapOnly }}" != "true" ]; then
-            if ! git rev-parse -q --verify "refs/tags/$IMAGE_TAG^{commit}" >/dev/null; then
-              echo "::error::Git tag $IMAGE_TAG does not exist. Create and push the annotated release tag on the commit being deployed."
-              exit 1
-            fi
-            if [ "$(git cat-file -t "refs/tags/$IMAGE_TAG")" != "tag" ]; then
-              echo "::error::Git tag $IMAGE_TAG must be an annotated tag, not a lightweight tag."
-              exit 1
-            fi
-            tag_commit=$(git rev-list -n 1 "refs/tags/$IMAGE_TAG")
-            if [ "$tag_commit" != "$GITHUB_SHA" ]; then
-              echo "::error::Git tag $IMAGE_TAG points to $tag_commit, but this run is building $GITHUB_SHA. Dispatch the deployment from the tagged commit."
-              exit 1
-            fi
+          # Every run builds and deploys an immutable release, so the tag must
+          # exist, be annotated, and point at the commit being built. Without
+          # this check the ECR tag and the OCI version label could name a
+          # release that was never tagged, or a tag could point at a different
+          # commit than the image.
+          if ! git rev-parse -q --verify "refs/tags/$IMAGE_TAG^{commit}" >/dev/null; then
+            echo "::error::Git tag $IMAGE_TAG does not exist. Create and push the annotated release tag on the commit being deployed."
+            exit 1
+          fi
+          if [ "$(git cat-file -t "refs/tags/$IMAGE_TAG")" != "tag" ]; then
+            echo "::error::Git tag $IMAGE_TAG must be an annotated tag, not a lightweight tag."
+            exit 1
+          fi
+          tag_commit=$(git rev-list -n 1 "refs/tags/$IMAGE_TAG")
+          if [ "$tag_commit" != "$GITHUB_SHA" ]; then
+            echo "::error::Git tag $IMAGE_TAG points to $tag_commit, but this run is building $GITHUB_SHA. Dispatch the deployment from the tagged commit."
+            exit 1
           fi
           if ! [[ "$DESIRED_COUNT" =~ ^[0-9]+$ ]] || [ "$DESIRED_COUNT" -lt 1 ] || [ "$DESIRED_COUNT" -gt 10 ]; then
             echo "::error::desiredCount must be an explicit integer between 1 and 10. Use a separate stack deploy to scale down."
+            exit 1
+          fi
+          # Every deployment starts tasks, and the stack attaches this alarm to
+          # the ECS service. Refuse a name that could not be a CloudWatch alarm
+          # rather than letting the stack update fail later.
+          if ! [[ "$DEPLOYMENT_ALARM_NAME" =~ ^[A-Za-z0-9_-]{1,255}$ ]]; then
+            echo "::error::DEPLOYMENT_ALARM_NAME must be a CloudWatch alarm name; automatic rollback cannot be configured without one."
             exit 1
           fi
           if ! [[ "$SUPABASE_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || [[ "$SUPABASE_HOST" == *..* ]]; then
@@ -145,47 +150,45 @@ jobs:
           # operator attestation: the workflow records them but cannot verify
           # restorability without Supabase credentials it deliberately does not
           # hold.
-          if [ "${{ inputs.bootstrapOnly }}" != "true" ]; then
-            if [ "${{ inputs.recoveryPlanVerified }}" != "true" ]; then
-              echo "::error::Confirm a verified, restorable Supabase backup or PITR restore point before migrating."
-              exit 1
-            fi
-            if [ -z "${RECOVERY_POINT_REFERENCE:-}" ] || [ -z "${RECOVERY_POINT_TIMESTAMP:-}" ]; then
-              echo "::error::recoveryPointReference and recoveryPointTimestamp are required for a normal deployment. Record the restore point before migrating."
-              exit 1
-            fi
-            if ! [[ "$RECOVERY_POINT_REFERENCE" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$ ]]; then
-              echo "::error::recoveryPointReference must be 8-128 characters using letters, digits, dot, underscore, colon, slash, or hyphen."
-              exit 1
-            fi
-            case "${RECOVERY_POINT_REFERENCE,,}" in
-              *todo*|*tbd*|*changeme*|*change-me*|*unknown*|*placeholder*|*n/a*|*none*)
-                echo "::error::recoveryPointReference looks like a placeholder; record the real restore point reference."
-                exit 1
-                ;;
-            esac
-            if ! [[ "$RECOVERY_POINT_TIMESTAMP" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
-              echo "::error::recoveryPointTimestamp must be a UTC timestamp such as 2026-10-23T18:30:00Z."
-              exit 1
-            fi
-            if ! recovery_epoch=$(date -u -d "$RECOVERY_POINT_TIMESTAMP" +%s 2>/dev/null); then
-              echo "::error::recoveryPointTimestamp is not a valid calendar timestamp."
-              exit 1
-            fi
-            if [ "$recovery_epoch" -gt "$(date -u +%s)" ]; then
-              echo "::error::recoveryPointTimestamp is in the future; record the actual restore point."
-              exit 1
-            fi
-            {
-              echo "### Recovery attestation"
-              echo ""
-              echo "- Restore point: \`$RECOVERY_POINT_REFERENCE\`"
-              echo "- Recorded at: \`$RECOVERY_POINT_TIMESTAMP\`"
-              echo "- Restore verified out of band: yes (attested by the operator)"
-              echo ""
-              echo "This record is an operator attestation. The workflow does not verify restorability automatically."
-            } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.recoveryPlanVerified }}" != "true" ]; then
+            echo "::error::Confirm a verified, restorable Supabase backup or PITR restore point before migrating."
+            exit 1
           fi
+          if [ -z "${RECOVERY_POINT_REFERENCE:-}" ] || [ -z "${RECOVERY_POINT_TIMESTAMP:-}" ]; then
+            echo "::error::recoveryPointReference and recoveryPointTimestamp are required for a deployment. Record the restore point before migrating."
+            exit 1
+          fi
+          if ! [[ "$RECOVERY_POINT_REFERENCE" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$ ]]; then
+            echo "::error::recoveryPointReference must be 8-128 characters using letters, digits, dot, underscore, colon, slash, or hyphen."
+            exit 1
+          fi
+          case "${RECOVERY_POINT_REFERENCE,,}" in
+            *todo*|*tbd*|*changeme*|*change-me*|*unknown*|*placeholder*|*n/a*|*none*)
+              echo "::error::recoveryPointReference looks like a placeholder; record the real restore point reference."
+              exit 1
+              ;;
+          esac
+          if ! [[ "$RECOVERY_POINT_TIMESTAMP" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+            echo "::error::recoveryPointTimestamp must be a UTC timestamp such as 2026-10-23T18:30:00Z."
+            exit 1
+          fi
+          if ! recovery_epoch=$(date -u -d "$RECOVERY_POINT_TIMESTAMP" +%s 2>/dev/null); then
+            echo "::error::recoveryPointTimestamp is not a valid calendar timestamp."
+            exit 1
+          fi
+          if [ "$recovery_epoch" -gt "$(date -u +%s)" ]; then
+            echo "::error::recoveryPointTimestamp is in the future; record the actual restore point."
+            exit 1
+          fi
+          {
+            echo "### Recovery attestation"
+            echo ""
+            echo "- Restore point: \`$RECOVERY_POINT_REFERENCE\`"
+            echo "- Recorded at: \`$RECOVERY_POINT_TIMESTAMP\`"
+            echo "- Restore verified out of band: yes (attested by the operator)"
+            echo ""
+            echo "This record is an operator attestation. The workflow does not verify restorability automatically."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configure AWS Credentials with OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -241,44 +244,16 @@ jobs:
         run: npm ci
         working-directory: hello-cdk
 
-      - name: Determine Whether the Stack Exists
-        id: stack
+      - name: Confirm the Stack Exists
         run: |
           set -euo pipefail
-          if aws cloudformation describe-stacks --stack-name "$STACK_NAME" >/dev/null 2>&1; then
-            stack_exists=true
-          else
-            stack_exists=false
-          fi
-          echo "exists=$stack_exists" >> "$GITHUB_OUTPUT"
-          if [ "${{ inputs.bootstrapOnly }}" = "true" ] && [ "$stack_exists" = "true" ]; then
-            echo "::error::bootstrapOnly is for the first deployment, but $STACK_NAME already exists. Run a normal deployment instead."
+          # This workflow updates an existing deployment. Creating the stack for
+          # the first time is a separate, deliberate operation (see
+          # docs/deployment.md), not something this release path does.
+          if ! aws cloudformation describe-stacks --stack-name "$STACK_NAME" >/dev/null 2>&1; then
+            echo "::error::$STACK_NAME does not exist. Create the stack first, then run this release."
             exit 1
           fi
-          if [ "${{ inputs.bootstrapOnly }}" != "true" ] && [ "$stack_exists" = "false" ]; then
-            echo "::error::$STACK_NAME does not exist. Run this workflow once with bootstrapOnly=true, populate the three Supabase secrets, then run a normal deployment."
-            exit 1
-          fi
-
-      - name: Create the Initial Stack Without Starting the Application
-        if: steps.stack.outputs.exists != 'true'
-        env:
-          UNIBUDGET_AWS_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
-          UNIBUDGET_AWS_REGION: ${{ env.AWS_REGION }}
-          ORIGIN_PREFIX_LIST: ${{ steps.prerequisites.outputs.origin_prefix_list }}
-        run: |
-          set -euo pipefail
-          # The ECR repository, migration task definition, load balancer, and
-          # CloudFront distribution must exist before the image is pushed or a
-          # migration is attempted. Desired count is hard-coded to zero until
-          # the migration succeeds.
-          npx cdk deploy \
-            --require-approval never \
-            -c imageTag="$IMAGE_TAG" \
-            -c desiredCount=0 \
-            -c supabaseHost="$SUPABASE_HOST" \
-            -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST"
-        working-directory: hello-cdk
 
       - name: Read Stack Outputs
         id: outputs
@@ -332,8 +307,38 @@ jobs:
             echo "application_url=$application_url"
           } >> "$GITHUB_OUTPUT"
 
+      # Runs before the image is built and before the migration, so a missing
+      # monitoring stack stops the release while nothing has changed. The
+      # application stack attaches this alarm to the ECS service; a name that
+      # does not exist fails the stack update, and an alarm that measures
+      # something else would protect nothing.
+      - name: Verify the Deployment Alarm Before Rolling Out
+        env:
+          ALARM_NAME: ${{ env.DEPLOYMENT_ALARM_NAME }}
+        run: |
+          set -euo pipefail
+          alarm_json=$(aws cloudwatch describe-alarms \
+            --alarm-names "$ALARM_NAME" \
+            --query 'MetricAlarms[0]' \
+            --output json)
+          if [ -z "$alarm_json" ] || [ "$alarm_json" = "null" ]; then
+            echo "::error::$ALARM_NAME does not exist in $AWS_ACCOUNT_ID/$AWS_REGION. Deploy UniBudgetStack-Monitoring before rolling out the application."
+            exit 1
+          fi
+          alarm_namespace=$(jq -r '.Namespace // empty' <<<"$alarm_json")
+          alarm_metric=$(jq -r '.MetricName // empty' <<<"$alarm_json")
+          if [ "$alarm_namespace" != "UniBudget/Application" ] || [ "$alarm_metric" != "Http5xxCount" ]; then
+            echo "::error::$ALARM_NAME measures $alarm_namespace/$alarm_metric, not UniBudget/Application/Http5xxCount. Refusing to treat it as the deployment alarm."
+            exit 1
+          fi
+          if [ "$(jq -r '.ActionsEnabled' <<<"$alarm_json")" != "true" ]; then
+            echo "::error::$ALARM_NAME has alarm actions disabled; a rollout failure would not notify anyone."
+            exit 1
+          fi
+          alarm_state=$(jq -r '.StateValue // empty' <<<"$alarm_json")
+          echo "$ALARM_NAME is present ($alarm_namespace/$alarm_metric), actions enabled, state $alarm_state."
+
       - name: Verify ECR Retention Policy Before Image Push
-        if: inputs.bootstrapOnly != true
         env:
           REPOSITORY_URI: ${{ steps.outputs.outputs.repository_uri }}
         run: |
@@ -359,7 +364,6 @@ jobs:
           printf '%s' "$policy_text" | node scripts/ecrLifecyclePolicy.mjs -
 
       - name: Verify CloudFront Delivery Configuration
-        if: inputs.bootstrapOnly != true
         env:
           DISTRIBUTION_ID: ${{ steps.outputs.outputs.cloudfront_distribution_id }}
           CLOUDFRONT_DOMAIN: ${{ steps.outputs.outputs.cloudfront_domain_name }}
@@ -558,7 +562,6 @@ jobs:
           echo "CloudFront serves https://$CLOUDFRONT_DOMAIN from $LOAD_BALANCER_DNS with caching disabled; the origin was verified before any migration."
 
       - name: Build and Push Application Image
-        if: inputs.bootstrapOnly != true
         id: image
         env:
           REPOSITORY_URI: ${{ steps.outputs.outputs.repository_uri }}
@@ -605,7 +608,6 @@ jobs:
           echo "Published $image_uri at $image_digest" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate Migration Task Configuration
-        if: inputs.bootstrapOnly != true
         env:
           IMAGE_URI: ${{ steps.image.outputs.image_uri }}
           APPLICATION_TASK_DEFINITION: ${{ steps.outputs.outputs.application_task_definition }}
@@ -817,7 +819,6 @@ jobs:
           echo "Migration task configuration matches the current host, role ARNs, and exact secret ARNs and JSON keys."
 
       - name: Run the One-Off Migration Task
-        if: inputs.bootstrapOnly != true
         env:
           IMAGE_URI: ${{ steps.image.outputs.image_uri }}
           MIGRATION_TASK_DEFINITION: ${{ steps.outputs.outputs.migration_task_definition }}
@@ -975,7 +976,6 @@ jobs:
           echo "Migration task completed successfully."
 
       - name: Deploy the Stack with the Migrated Image
-        if: inputs.bootstrapOnly != true
         env:
           UNIBUDGET_AWS_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
           UNIBUDGET_AWS_REGION: ${{ env.AWS_REGION }}
@@ -988,12 +988,12 @@ jobs:
             --require-approval never \
             -c imageTag="$IMAGE_TAG" \
             -c desiredCount="$DESIRED_COUNT" \
+            -c deploymentAlarmName="$DEPLOYMENT_ALARM_NAME" \
             -c supabaseHost="$SUPABASE_HOST" \
             -c cloudFrontOriginPrefixListId="$ORIGIN_PREFIX_LIST"
         working-directory: hello-cdk
 
       - name: Wait for the ECS Service
-        if: inputs.bootstrapOnly != true
         env:
           CLUSTER: ${{ steps.outputs.outputs.cluster }}
           SERVICE: ${{ steps.outputs.outputs.service }}
@@ -1002,26 +1002,38 @@ jobs:
           aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
 
       - name: Verify the Running Image
-        if: inputs.bootstrapOnly != true
         env:
           CLUSTER: ${{ steps.outputs.outputs.cluster }}
           SERVICE: ${{ steps.outputs.outputs.service }}
           IMAGE_URI: ${{ steps.image.outputs.image_uri }}
           IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}
+          DEPLOYMENT_ALARM_NAME: ${{ env.DEPLOYMENT_ALARM_NAME }}
         run: |
           set -euo pipefail
           if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::The workflow did not record a valid image digest; refusing to trust a tag-only verification."
             exit 1
           fi
-          # A circuit-breaker rollback can leave the old task set healthy. Do
-          # not report success unless the service is actually running the image
-          # built by this workflow.
+          # A rollback (from the deployment alarm or the circuit breaker) can
+          # leave the old task set healthy. Do not report success unless the
+          # service is actually running the image built by this workflow.
           service_json=$(aws ecs describe-services \
             --cluster "$CLUSTER" \
             --services "$SERVICE" \
             --query 'services[0]' \
             --output json)
+          # A service that lost its deployment alarm would still reach a steady
+          # state after a failed rollout, so the release must not report success
+          # merely because the image happens to be healthy. This is the check
+          # that stops an unprotected service from being described as protected.
+          if ! jq -e --arg alarm "$DEPLOYMENT_ALARM_NAME" '
+            (.deploymentConfiguration.alarms.enable == true)
+            and (.deploymentConfiguration.alarms.rollback == true)
+            and (((.deploymentConfiguration.alarms.alarmNames // []) | index($alarm)) != null)
+          ' <<<"$service_json" >/dev/null; then
+            echo "::error::The ECS service is not deployed with $DEPLOYMENT_ALARM_NAME as an enabled rollback deployment alarm; automatic rollback is not configured."
+            exit 1
+          fi
           rollout_state=$(jq -r '.deployments[] | select(.status == "PRIMARY") | .rolloutState // empty' <<<"$service_json")
           if [ "$rollout_state" != "COMPLETED" ]; then
             echo "::error::The primary ECS deployment is '$rollout_state', not COMPLETED. A rollback may have occurred."
@@ -1059,7 +1071,6 @@ jobs:
           echo "ECS service is running the expected image at $IMAGE_DIGEST."
 
       - name: Verify Application Health Through CloudFront
-        if: inputs.bootstrapOnly != true
         env:
           APPLICATION_URL: ${{ steps.outputs.outputs.application_url }}
         run: |
@@ -1083,6 +1094,19 @@ jobs:
             echo "::error::The login page returned $login_code through CloudFront."
             exit 1
           fi
+
+          # Correlation is part of the operability contract: an operator must be
+          # able to quote a request id from the response when reporting a
+          # failure. Fail the release if the header stops being returned.
+          request_id=$(curl --silent --show-error --dump-header - --output /dev/null \
+            --retry 12 --retry-delay 5 --retry-connrefused \
+            "${APPLICATION_URL%/}/login" \
+            | tr -d '\r' | awk 'tolower($1) == "x-request-id:" {print $2}' | tail -n 1)
+          if ! [[ "$request_id" =~ ^[A-Za-z0-9._-]{8,64}$ ]]; then
+            echo "::error::The application did not return a correlatable X-Request-Id header through CloudFront."
+            exit 1
+          fi
+          echo "Correlation id present on the login response: $request_id"
 
           # A healthy API and login page do not prove a dynamic content route
           # renders: /blog/:slug returned 500 in production while /api/health
@@ -1121,7 +1145,6 @@ jobs:
           echo "Application is healthy at $health_url"
 
       - name: Verify Request Correlation Through CloudFront
-        if: inputs.bootstrapOnly != true
         env:
           APPLICATION_URL: ${{ steps.outputs.outputs.application_url }}
         run: |

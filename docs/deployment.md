@@ -214,13 +214,14 @@ can be traced to the exact request. It never logs credentials, SQL, query
 strings, session tokens, or user data. See [logging.md](logging.md) for the
 field schema and the alarm-to-log workflow.
 
-The separate `UniBudgetStack-Monitoring` stack has a metric filter for
-`{ $.level = "error" }` and four deployed alarms. `UniBudgetStack` no longer
-defines any alarm or metric filter; its test asserts that absence, so an
-application release cannot recreate the duplicate filter:
+The separate `UniBudgetStack-Monitoring` stack has two metric filters —
+`{ $.level = "error" }` and `$.status >= 500` — and five deployed alarms.
+`UniBudgetStack` no longer defines any alarm or metric filter; its test asserts
+that absence, so an application release cannot recreate the duplicate filter:
 
 | Alarm | Meaning and first diagnostic |
 | --- | --- |
+| Request 5xx | Any request record with `status >= 500` in one minute. This is the deployment alarm the ECS service watches, so it fails a bad rollout. First check `/api/health` and the latest error/access records for the same `requestId`. |
 | Target 5xx | More than five target 5xx responses in ten minutes; inspect the latest error events and the running digest. |
 | Unhealthy targets | A target is failing `/api/health`; check database reachability, role assertion, and task logs. |
 | Live tasks | Fewer live tasks than the desired count for three minutes; inspect ECS events, task stop reasons, and capacity. `LiveTaskCount` does not require Container Insights. |
@@ -228,10 +229,18 @@ application release cannot recreate the duplicate filter:
 
 Alarm notifications use the existing SNS topic with a confirmed subscription.
 The monitoring stack imports the topic and does not create or subscribe one.
-As of 2026-10-25 the stack is `UPDATE_COMPLETE`, the four alarms are `OK`, and
-CloudWatch alarm history records a successful SNS action from a manual state
-transition. Inbox receipt was not independently verified, and no real metric
-threshold crossing has been observed. Do not deploy the application stack to
+As of 2026-10-26 both stacks are `UPDATE_COMPLETE`: the monitoring stack owns
+all five alarms and two filters, and the application stack's service watches
+`UniBudgetStack-Monitoring-Request5xx` as its deployment alarm (read back from
+`deploymentConfiguration.alarms`). All five alarms are `OK`. CloudWatch alarm
+history records successful SNS actions for two operator-set state transitions
+(`StructuredErrors` on 2026-10-25, `UnhealthyTargets` on 2026-10-26); for the
+2026-10-26 check SNS counted 1 published, 1 delivered and 0 failed. Inbox
+receipt was not independently verified, and no real metric threshold crossing
+has been observed **in production** — one was observed in the disposable drill
+account on 2026-10-26 (see the drill record), so the production rollback path is
+configured rather than exercised. Do not
+deploy the application stack to
 add alarms: its earlier monitoring change set is blocked by ECS/ECR coupling
 and would recreate resources now owned by the monitoring stack. The exact
 topic policy, deployment commands, change-set history, subscription
@@ -298,6 +307,10 @@ deployment and has not been applied.
 
 ## First deployment
 
+Creating the stack for the first time is a manual, deliberate operation. The
+`Deploy` workflow only updates an existing stack: it fails when `UniBudgetStack`
+does not exist, and it has no bootstrap input.
+
 Prerequisites:
 
 - an approved AWS account and region, with the CDK bootstrap stack deployed;
@@ -305,43 +318,13 @@ Prerequisites:
   EC2 and CloudFront permissions listed below;
 - no custom domain, DNS record, or ACM certificate (CloudFront supplies
   HTTPS);
-- the three Supabase secrets populated **after** the bootstrap stack exists;
+- the three Supabase secrets populated **after** the stack exists;
 - a restorable Supabase backup or PITR restore point, recorded before the
   migration run;
 - approval to create the retained RDS instance, ALB, CloudFront distribution,
   Fargate service, ECR repository, and CloudWatch log group.
 
-### Option A: bootstrap through the workflow
-
-1. Run `.github/workflows/deploy.yml` with `bootstrapOnly=true`, a future
-   `imageTag`, a `desiredCount` of at least `1`, `recoveryPlanVerified=false`
-   (no migration runs), and `SUPABASE_HOST` configured. This creates the stack
-   — including the ALB, the CloudFront distribution, and the ECR repository —
-   with `desiredCount=0`; it does not build, migrate, or start the application.
-2. Populate the three Supabase secrets described above.
-3. Read the `ApplicationUrl` and `CloudFrontDomainName` stack outputs. They are
-   `https://<distribution-id>.cloudfront.net`; do not invent or paste a
-   hostname, and do not create a DNS record.
-4. Run the workflow again with `bootstrapOnly=false`, the same `imageTag`,
-   `recoveryPlanVerified=true`, and the recorded `recoveryPointReference` and
-   `recoveryPointTimestamp` for the restore point you verified. It checks the
-   CloudFront delivery configuration and the HTTPS `/login` origin response,
-   builds and pushes the image, validates both task definitions and the
-   migration task, runs the migration, and only then deploys the requested
-   running task count.
-5. Confirm the ALB target is healthy and that
-   `https://<distribution-id>.cloudfront.net/api/health` returns 200.
-6. Register a user, sign in, and verify that the session survives a request.
-   Confirm in the browser that the cookie is `Secure; HttpOnly;
-   SameSite=Strict`, that every request stays on the CloudFront hostname, and —
-   in Supabase — that the application role is `unibudget_app` and that `anon`,
-   `authenticated`, and `service_role` have no privileges on the UniBudget
-   tables or `schema_migrations`.
-
-A normal deployment is refused while the stack does not exist, and
-`bootstrapOnly` is refused once it does.
-
-### Option B: manual bootstrap
+### Creating the stack (one-time)
 
 1. Create the stack without starting the application. Use the real tag you
    will push; the task definitions can reference it before the image exists
@@ -416,7 +399,15 @@ A normal deployment is refused while the stack does not exist, and
 5. Deploy again with the same image tag, pooler host, prefix list ID, and the
    approved running count (for example `desiredCount=2`).
 6. Verify the `ApplicationUrl` output, `/api/health`, and `/login` over HTTPS,
-   then repeat the sign-in and privilege checks from Option A.
+   then confirm a signed-in session survives a request: the cookie is `Secure;
+   HttpOnly; SameSite=Strict`, every request stays on the CloudFront hostname,
+   and in Supabase the application role is `unibudget_app` while `anon`,
+   `authenticated`, and `service_role` hold no privileges on the UniBudget
+   tables or `schema_migrations`.
+
+Once the stack exists, every later release runs through
+`.github/workflows/deploy.yml`; the manual steps above are for the first
+creation only.
 
 The migration task and the application share one image tag, but the migration
 must run before the service rollout. The workflow enforces that ordering.
@@ -686,8 +677,8 @@ and then:
    Git tag to point at `GITHUB_SHA`, and verifies the live ECR lifecycle policy
    is release-safe (ten tagged, ten untagged, no `any` rule); a missing or
    mismatched tag or an unsafe policy stops the run before any image is built
-   or pushed. The tag check runs on normal deployments, not the bootstrap run
-   that publishes no image;
+   or pushed. The tag check runs on every deployment, because every run
+   publishes an image;
 2. reads `ApplicationUrl`, `CloudFrontDomainName`, and
    `CloudFrontDistributionId` from the stack outputs and verifies that the
    distribution is `Deployed`, serves this stack's ALB, redirects HTTP to
@@ -695,7 +686,10 @@ and then:
    required methods, and is not attached to a custom domain, then requests the
    HTTPS `/login` page through CloudFront and requires the real UniBudget login
    form on a cache miss, following redirects only on that hostname, before
-   building or migrating;
+   building or migrating. It also verifies that the `Request5xx` deployment
+   alarm exists, measures `UniBudget/Application` `Http5xxCount`, and has alarm
+   actions enabled, so a missing monitoring stack stops the run before the
+   image build or the migration;
 3. builds and pushes a new immutable tag (it refuses to overwrite an existing
    tag), validates the returned `sha256:` digest, records it in the run output,
    and writes the digest to the job summary;
@@ -716,10 +710,14 @@ and then:
    left registered for inspection. The ECS service is never scaled down or
    pointed at the temporary revision, and the rollout still uses `$IMAGE_TAG`
    from the same build;
-8. deploys the stack only after migration exit code `0`;
-9. waits for ECS service stability, verifies that the task definition references
-   the built image tag and that a running task reports the recorded image
-   digest, then checks `/api/health`, `/login`, one real `/blog/<slug>` entry
+8. deploys the stack only after migration exit code `0`, passing
+   `-c deploymentAlarmName=<alarm>` so the ECS service watches that alarm for
+   the rollout;
+9. waits for ECS service stability, verifies that the service's deployment
+   configuration still lists the alarm with rollback enabled, that the task
+   definition references the built image tag, and that a running task reports
+   the recorded image digest, then checks `/api/health`, `/login`, one real
+   `/blog/<slug>` entry
    from `src/content/blog`, and an unknown blog slug through the CloudFront
    HTTPS URL. The blog checks exist because health and login can be green while
    a dynamic content route still fails or returns its not-found page as 200;
@@ -729,8 +727,8 @@ and then:
    in force independently.
 
 The workflow requires an explicit `desiredCount` between `1` and `10`; it has
-no default and never silently scales the service to zero. A non-bootstrap run
-also requires `recoveryPlanVerified=true`, the explicit confirmation that a
+no default and never silently scales the service to zero. A run also requires
+`recoveryPlanVerified=true`, the explicit confirmation that a
 restorable Supabase backup or PITR restore point exists, plus that point's
 `recoveryPointReference` and `recoveryPointTimestamp`, which are recorded in the
 run summary; the run refuses to migrate without them. To intentionally stop the
@@ -740,6 +738,34 @@ separately with `desiredCount=0` during an approved maintenance window.
 If the pooler host or secret references in the stack differ from what the
 workflow expects, validation fails **before** the migration. Do not bypass the
 check by overriding task environment values.
+
+### Deployment alarm and stack order
+
+Any deployment that starts tasks must name an alarm, because that alarm is what
+rolls a bad rollout back. The order is fixed and cannot be inverted:
+
+1. `UniBudgetStack` must exist first — `UniBudgetStack-Monitoring` imports its
+   log group, target group, and SNS topic.
+2. Deploy `UniBudgetStack-Monitoring`, which creates `Request5xx` and the
+   `status >= 500` metric filter (see [alarms.md](alarms.md)).
+3. Deploy the application stack with
+   `-c deploymentAlarmName=UniBudgetStack-Monitoring-Request5xx`. The CDK entry
+   point refuses `desiredCount > 0` without it, and ECS fails a stack update
+   that names an alarm which does not exist.
+
+```bash
+cd hello-cdk
+npx cdk deploy UniBudgetStack --require-approval never \
+  -c imageTag="$IMAGE_TAG" \
+  -c desiredCount=1 \
+  -c deploymentAlarmName=UniBudgetStack-Monitoring-Request5xx \
+  -c supabaseHost="$SUPABASE_HOST" \
+  -c cloudFrontOriginPrefixListId="$prefix_list_id"
+```
+
+A stack update that starts no tasks (`desiredCount=0`) does not need the alarm,
+and neither does destroying the stack when `desiredCount` is left at its
+default of `0`. Every update that starts tasks does need it.
 
 Changing the pooler host needs a maintenance deployment: deploy the stack with
 `desiredCount=0` so the application is not restarted against the old host,
@@ -753,9 +779,9 @@ A stack created before this revision may be running, may have an outdated
 `ApplicationUrl`, and may lack the task-role, execution-role, and secret-ARN
 outputs that the workflow now validates. This revision also adds the CloudFront
 distribution and the prefix-list-only ALB ingress, and removes the ACM
-certificate and custom-domain inputs. `bootstrapOnly=true` cannot repair it
-because the stack already exists. Perform this one-time upgrade with
-`desiredCount=0` in a maintenance window. It updates CloudFormation only; it
+certificate and custom-domain inputs. Perform this one-time upgrade with
+`desiredCount=0` in a maintenance window (creating the stack is a separate
+manual step; the workflow only updates an existing stack). It updates CloudFormation only; it
 does not deploy an image, run a migration, or touch the separate static
 S3/CloudFront site.
 
@@ -834,8 +860,7 @@ S3/CloudFront site.
      -c cloudFrontOriginPrefixListId="$prefix_list_id"
    ```
 
-   Do not use `bootstrapOnly`; it is refused for an existing stack. Do not run
-   `cdk destroy`.
+   Do not run `cdk destroy`.
 
 5. Verify the new outputs and the retained RDS resource. The RDS physical ID
    must match step 1, and `DeletionProtection` must remain enabled.
@@ -998,8 +1023,11 @@ open RPO/RTO decision are in
 
 ## Rollback and its limits
 
-- **Application:** the ECS deployment circuit breaker rolls back a failed
-  service deployment. The ECR lifecycle policy keeps the ten most recent
+- **Application:** the `Request5xx` ECS deployment alarm rolls back a failed
+  service deployment; the circuit breaker stays enabled but needs three failed
+  launches at `desiredCount: 1`, which is too slow to be the rollback path.
+  Both were drilled on 2026-10-26 ([rollback-drill-2.md](rollback-drill-2.md)).
+  The ECR lifecycle policy keeps the ten most recent
   tagged releases, and each push adds a tagged OCI index plus untagged
   platform and attestation manifests; the policy counts those separately.
   ECR will not expire an untagged child while a tagged index references it,
@@ -1018,10 +1046,27 @@ open RPO/RTO decision are in
 - **RDS:** decommissioning requires a verified snapshot, an explicit cost
   decision, and a plan for its security group.
 
-Rollback Drill 2 has **not been executed**. The isolated-account runbook,
-observation table, acceptance criteria, and evidence template are in
-[rollback-drill-2.md](rollback-drill-2.md). Do not use the production account
-to create an intentional outage.
+Rollback Drill 2 was **executed twice on 2026-10-26** in disposable account
+`293633790894`: run 1 required a manual rollback, and run 2 — after the
+`Request5xx` deployment alarm was added — rolled back automatically and reached
+steady state on the baseline 3 m 10 s after the broken revision was applied
+(the alarm itself fired 33 s after the first failed probe). Production has not
+been through a drill of its own. The record is in
+[rollback-drill-2.md](rollback-drill-2.md). Do not use the production account to
+create an intentional outage.
+
+**Production deployment (2026-10-26): performed, in the required order.**
+`UniBudgetStack-Monitoring` was deployed first, adding `Application5xxMetricFilter`
+and `Request5xxAlarm` and nothing else (13 s, `UPDATE_COMPLETE`). `UniBudgetStack`
+was deployed second with `-c deploymentAlarmName=UniBudgetStack-Monitoring-Request5xx`;
+the only change in the `cdk diff` was `.Alarms` on the ECS service's
+`DeploymentConfiguration`, and the task definition stayed at revision `:4`
+(51 s, `UPDATE_COMPLETE`). The service now reports the alarm with
+`rollback: true` and `enable: true`; a repeat `cdk diff` of both stacks reports
+no differences, and the live routes were re-checked afterwards
+(`/api/health` 200, `/login` 200, `/blog/first-post` 200, unknown slug 404).
+Still unproven: a failed production rollout has not exercised the alarm, and no
+alarm email has been confirmed.
 
 The ECR lifecycle policy in `hello-cdk/lib/cdk-stack.ts` keeps ten tagged
 images and ten untagged images. On 2026-10-25 the live repository still used
