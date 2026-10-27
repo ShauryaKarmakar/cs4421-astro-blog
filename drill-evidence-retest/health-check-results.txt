@@ -1,0 +1,38 @@
+Health check results - RETEST, drill account 293633790894, us-east-1
+Endpoint: https://dxad2i4v830ta.cloudfront.net/api/health
+
+1. BASELINE - v1.1.3, task definition revision :5
+   ALB target-group probes and public requests: HTTP 200 {"status":"ok"}
+
+2. BROKEN - v0.0.0-drill.1, task definition revision :6, deployed 20:32:47Z
+   The public endpoint stayed HTTP 200 the whole time: the broken task never
+   joined the target group, so no viewer was ever routed to it.
+   The broken task's own readiness endpoint failed on every probe (6 records):
+
+     {"level":"warn","timestamp":"2026-10-26T20:33:37.382Z","event":"http.request","requestId":"71d49ba7-50ba-453e-bfd0-da83c2ce3b76","method":"GET","path":"/api/health","status":500,"durationMs":38}
+     {"level":"warn","timestamp":"2026-10-26T20:33:37.452Z","event":"http.request","requestId":"02158711-7a4b-4ef6-aa79-541380d0a447","method":"GET","path":"/api/health","status":500,"durationMs":1}
+     {"level":"warn","timestamp":"2026-10-26T20:34:07.195Z","event":"http.request","requestId":"5993e6e5-c3aa-4858-9e4a-aee1a0e5910c","method":"GET","path":"/api/health","status":500,"durationMs":24}
+     {"level":"warn","timestamp":"2026-10-26T20:34:07.368Z","event":"http.request","requestId":"b68231cd-114d-42a0-a278-32aba7e3bec7","method":"GET","path":"/api/health","status":500,"durationMs":1}
+
+   Liveness was untouched in the same window (14 records):
+     {"level":"info","timestamp":"2026-10-26T20:33:59.447Z","event":"http.request","requestId":"911f3119-dfb1-421b-bb2d-a001879cb131","method":"GET","path":"/api/live","status":200,"durationMs":0}
+     {"level":"info","timestamp":"2026-10-26T20:34:29.451Z","event":"http.request","requestId":"5eb91f47-21ff-449b-a6b7-ddb59a743209","method":"GET","path":"/api/live","status":200,"durationMs":0}
+     {"level":"info","timestamp":"2026-10-26T20:34:59.454Z","event":"http.request","requestId":"0c239bdb-9203-4c17-884f-9cb53cb552dd","method":"GET","path":"/api/live","status":200,"durationMs":0}
+
+   So the container stayed up (liveness 200) while readiness returned 500 -
+   exactly the separation the health-check design intends.
+
+3. AUTOMATIC ROLLBACK - back to revision :5 with no operator action
+   HTTP 200   Body: {"status":"ok"}
+   Running digest: sha256:e43a4867f0aef7215d94344e7add6f00d6226fda483c4e675caf11a1fecc0876
+   (identical to the baseline digest recorded in git-evidence.txt)
+
+TIMING (UTC)
+   20:32:47  update-service to revision :6 (T0)
+   20:33:07  ECS started the broken task
+   20:33:37  first 500 from /api/health
+   20:34:10  Request5xx alarm OK -> ALARM          (T0 + 1m23s)
+   20:34:14  ECS: deployment failed: alarm detected
+   20:34:14  ECS: rolling back to ecs-svc/6246541257980501183
+   20:35:57  deployment completed, service at steady state (T0 + 3m10s)
+   20:36:10  Request5xx alarm ALARM -> OK

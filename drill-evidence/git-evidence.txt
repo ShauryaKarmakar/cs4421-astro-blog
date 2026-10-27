@@ -1,0 +1,34 @@
+UniBudget CS4421 rollback drill 2 — Git evidence
+Captured (UTC): 2026-10-26T19:09:11Z
+Drill account: 293633790894   Region: us-east-1
+
+WORKING version
+  Git tag          : v1.1.3
+  Git commit       : c9eb3736a7a412f1bdd7f261a0754b13da9e4cf6
+  Commit subject   : Read CloudFront origins from the Items array in the deploy gate (#46)
+  ECR image tag    : v1.1.3
+  ECR digest       : sha256:949cfcf830dc11b64439ebec87662336f4fefecf456ca7ebfd18d7cb6be99731
+  ECS task def     : UniBudgetStackApplicationTask3DB06674:2
+
+BROKEN version (drill only, never committed or pushed)
+  Git commit       : none — uncommitted working-tree change
+  ECR image tag    : v0.0.0-drill.1
+  Source change    : src/pages/api/health.ts returns HTTP 500 instead of 200
+  Branch used      : detached worktree at tag v1.1.3 (.drill-worktree)
+
+Broken image digest: sha256:6bf3b039bcaac7a9a850c968b2e126b438e73bc48a6ff3629f83dce3c1c8db63
+Broken source diff (3 changed lines + comment):
+@@ -20,8 +20,11 @@ async function checkDatabase(): Promise<void> {
+ export const GET: APIRoute = async () => {
+   try {
+     await checkDatabase();
+-    return new Response(JSON.stringify({ status: 'ok' }), {
+-      status: 200,
++    // DRILL ONLY: report failure even when the database is reachable, so the
++    // load balancer marks this task unhealthy. This exists only in the
++    // v0.0.0-drill.1 image and is never committed or merged.
++    return new Response(JSON.stringify({ status: 'error', drill: 'intentional' }), {
++      status: 500,
+       headers: healthHeaders,
+     });
+   } catch (error) {

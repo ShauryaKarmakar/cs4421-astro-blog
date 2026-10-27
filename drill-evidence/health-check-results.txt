@@ -1,0 +1,20 @@
+Health check results — drill account 293633790894
+Endpoint: https://d2yjnxxylmxk9w.cloudfront.net/api/health
+
+1. BASELINE (working version v1.1.3, revision :2), 2026-10-26T19:09:11Z
+   HTTP 200   Body: {"status":"ok"}
+
+2. BROKEN VERSION (v0.0.0-drill.1, revision :3), deployed 19:11:37Z
+   Public CloudFront endpoint: HTTP 200 the whole time. The ALB never sent
+   viewer traffic to the broken task, because a task only joins the target
+   group after passing the health check. No user saw an error.
+   The broken task itself returned 500 to every ALB health probe:
+     ECS event  19:13:42Z  (port 8080) is unhealthy in (target-group ...)
+                          reason: Health checks failed with these codes: [500]
+     Task log   19:12:31Z  GET /api/health  status=500
+     Task log   19:12:46Z  GET /api/live    status=200   (container stayed alive)
+     Log group  /unibudget/ecs/application
+     Stream     application/ApplicationContainer/e44b3dc902444e6ab7d389f34963f5cb
+
+3. AFTER ROLLBACK to revision :2 (v1.1.3), 2026-10-26T19:31:39Z
+   HTTP 200   Body: {"status":"ok"}

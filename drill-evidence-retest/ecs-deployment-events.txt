@@ -1,0 +1,19 @@
+ECS deployment events — automated rollback via deployment alarm
+Service: UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD
+T0 20:32:47Z (eventual consistency means the deployment may appear as ecs-svc/3522539510281430839)
+
+2026-10-26T20:28:01.727000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-A3H1D6QMGAKH/ebaebf6be33321ef)
+2026-10-26T20:28:29.715000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) has reached a steady state.
+2026-10-26T20:33:07.503000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) has started 1 tasks: (task 3d84250844b14d2aa7ea8100620260a5).
+2026-10-26T20:33:36.969000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-A3H1D6QMGAKH/ebaebf6be33321ef)
+2026-10-26T20:34:14.559000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) (deployment ecs-svc/3522539510281430839) deployment failed: alarm detected.
+2026-10-26T20:34:14.560000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) rolling back to deployment ecs-svc/6246541257980501183.
+2026-10-26T20:34:46.395000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) (task 3d84250844b14d2aa7ea8100620260a5) (port 8080) is unhealthy in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-A3H1D6QMGAKH/ebaebf6be33321ef) due to (reason Health checks failed with these codes: [500]).
+2026-10-26T20:34:46.437000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) has stopped 1 running tasks: (task 3d84250844b14d2aa7ea8100620260a5).
+2026-10-26T20:34:47.612000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:293633790894:targetgroup/UniBud-Appli-A3H1D6QMGAKH/ebaebf6be33321ef)
+2026-10-26T20:34:57.425000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD, taskSet ecs-svc/3522539510281430839) has begun draining connections on 1 tasks.
+2026-10-26T20:35:57.991000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) (deployment ecs-svc/6246541257980501183) deployment completed.
+2026-10-26T20:35:57.992000+00:00	(service UniBudgetStack-ApplicationService423C69C6-zbnnEyn5LkgD) has reached a steady state.
+
+Final task definition: arn:aws:ecs:us-east-1:293633790894:task-definition/UniBudgetStackApplicationTask3DB06674:5
+Final primary rollout : COMPLETED

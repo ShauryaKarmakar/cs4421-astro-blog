@@ -1,0 +1,52 @@
+Cleanup results - RETEST, drill account 293633790894, us-east-1
+
+Stack deletion (aws cloudformation delete-stack, no manual intervention):
+=== deleting UniBudgetStack-Monitoring at 20:43:19Z
+=== UniBudgetStack-Monitoring deleted at 20:43:44Z
+=== deleting UniBudgetStack at 20:43:44Z
+=== UniBudgetStack deleted at 20:48:48Z
+=== deleting CDKToolkit at 20:48:48Z
+=== CDKToolkit deleted at 20:49:33Z
+
+Unlike the first run, this teardown did not stall. The RDS instance was
+deleted first (--skip-final-snapshot --delete-automated-backups) after
+disabling deletion protection and scaling the service to 0, because CDK
+marks RDS RETAIN and CloudFormation would otherwise skip it while the
+database subnet could not be released.
+
+Retained resources removed after stack deletion:
+  - ECR repository unibudgetstack-applicationrepository13e54097-lkeaiibthqhh
+  - log group /unibudget/ecs/application
+  - log group /aws/lambda/UniBudgetStack-CustomVpcRestrictDefaultSGCustomRes-*
+  - secrets unibudget/supabase/{migration,ca,application}
+  - secrets DatabaseAdminCredentialsC81-*, ApplicationDatabaseCredenti-*
+  - RDS subnet group unibudgetstack-applicationdatabasesubnetgroup242bc54f-*
+  - S3 bucket cdk-hnb659fds-assets-293633790894-us-east-1 (all versions)
+
+FINAL STATE at 2026-10-26T20:54:07Z
+cloudformation: none
+RDS instances: none
+RDS subnet groups: none
+RDS manual snapshots: none
+ECS clusters: none
+ECR repositories: none
+load balancers: none
+target groups: none
+CloudFront distributions: None
+non-default VPCs: none
+running/pending EC2: none
+NAT gateways: none
+elastic IPs: none
+log groups: none
+secrets: none
+SNS topics: none
+CloudWatch alarms: none
+Lambda functions: none
+S3 buckets: none
+DynamoDB tables: none
+SQS queues: None
+
+Every line above reports none/None. The pre-existing default VPC and the
+account-level ECR/S3 defaults were left in place. Total spend for this retest
+was about 25 minutes of ALB, Fargate (one task), RDS and CloudFront, well
+under US$1; nothing remains that keeps charging.

@@ -1,0 +1,15 @@
+UniBudget rollback drill — RETEST after fixes
+Captured (UTC): 2026-10-26T20:39:47Z
+Drill account: 293633790894  Region: us-east-1
+
+WORKING version
+  Git tag        : v1.1.3
+  Git commit     : c9eb3736a7a412f1bdd7f261a0754b13da9e4cf6
+  ECR tag/digest : v1.1.3  sha256:e43a4867f0aef7215d94344e7add6f00d6226fda483c4e675caf11a1fecc0876
+  Task definition: UniBudgetStackApplicationTask3DB06674:5
+
+BROKEN version (never committed, never pushed to the production repo)
+  Git commit     : none - uncommitted worktree change at tag v1.1.3
+  ECR tag/digest : v0.0.0-drill.1  sha256:cc9aa9f15310c196c19b544623c08e3b0fb2f5394a622d2ef5c54dc62ee2c3dc
+  Task definition: UniBudgetStackApplicationTask3DB06674:6
+  Change         : src/pages/api/health.ts returns HTTP 500 after a successful DB check
