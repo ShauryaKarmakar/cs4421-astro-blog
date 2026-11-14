@@ -19,8 +19,8 @@
     "test": "vitest"
   },
   "dependencies": {
-    "@astrojs/mdx": "^8.1.2",
-    "@astrojs/node": "^11.1.9",
+    "@astrojs/mdx": "^8.1.4",
+    "@astrojs/node": "^11.1.12",
     "@astrojs/rss": "^4.0.19",
     "@astrojs/sitemap": "^3.7.4",
     "astro": "^7.4.12",
@@ -37,7 +37,7 @@
     "eslint": "^10.14.0",
     "eslint-plugin-astro": "^3.2.1",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.72.1",
-    "vitest": "^5.0.5"
+    "typescript-eslint": "^8.72.2",
+    "vitest": "^5.1.0"
   }
 }
